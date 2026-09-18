@@ -155,18 +155,23 @@ export function createGame({ scene, camera, canvas, ui }) {
   }
 
   /**
-   * Выбирает ближайший к текущему повороту ещё целый кусочек — яйцо
-   * каждый раз доворачивается на минимальный угол к соседнему кусочку,
-   * а не прыгает к случайному месту по всей окружности.
+   * Выбирает следующий целый кусочек: в первую очередь самый верхний ещё
+   * целый ряд (яйцо «открывается» сверху вниз, как настоящее), а среди
+   * кусочков на этой же высоте — ближайший по углу к текущему повороту,
+   * чтобы яйцо доворачивалось на минимальный угол, а не прыгало по кругу.
    */
   function pickNewTarget(meshes) {
     if (!meshes.length) {
       activeTarget = null;
       return;
     }
+    const topY = meshes.reduce((max, mesh) => Math.max(max, mesh.userData.centroid.y), -Infinity);
+    const band = 0.35; // кусочки в пределах этой высоты от самого верхнего считаются «на одном уровне»
+
     let best = meshes[0];
     let bestDelta = Infinity;
     for (const mesh of meshes) {
+      if (topY - mesh.userData.centroid.y > band) continue;
       const delta = Math.abs(shortestDelta(baseRotationY, -mesh.userData.midAngle));
       if (delta < bestDelta) {
         bestDelta = delta;

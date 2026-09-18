@@ -74,14 +74,37 @@ export function buildShellGrid({ steps, segments, scale = 1 }) {
   return { positions, uvs, normals, rows, cols };
 }
 
+// Соседи по диагонали тоже считаются — иначе очаги растут ровными
+// ромбами со ступенчатым краем строго по сетке (видно как «пиксели»).
+// С диагоналями фронт роста округлее, а край после второго прохода — рваный.
+const NEIGHBOUR_OFFSETS = [
+  [-1, 0], [1, 0], [0, -1], [0, 1],
+  [-1, -1], [-1, 1], [1, -1], [1, 1],
+];
+
+function shuffleInPlace(arr) {
+  for (let k = arr.length - 1; k > 0; k--) {
+    const r = Math.floor(Math.random() * (k + 1));
+    [arr[k], arr[r]] = [arr[r], arr[k]];
+  }
+}
+
 /**
  * «Выращивает» pieceCount неровных кусочков по сетке граней случайными
  * очагами — получаются хаотичные пятна, а не аккуратные дольки, и вместе
  * они покрывают всю поверхность без единого пропуска.
+ *
+ * Работает в два прохода:
+ * 1. Полное покрытие — очаги растут во все 8 соседних граней, пока не
+ *    заполнят всю сетку (гарантированно без дыр).
+ * 2. Рваный край — часть граничных граней случайно передаётся соседнему
+ *    кусочку, чтобы стык перестал быть ровной линией по сетке и стал
+ *    похож на то, что кусок оторвали руками, а не вырезали.
  */
 export function growPieces(rows, cols, pieceCount) {
   const faceRows = rows - 1;
-  const regionOf = new Int32Array(faceRows * cols).fill(-1);
+  const total = faceRows * cols;
+  const regionOf = new Int32Array(total).fill(-1);
   let wave = [];
 
   for (let p = 0; p < pieceCount; p++) {
@@ -95,28 +118,24 @@ export function growPieces(rows, cols, pieceCount) {
     wave.push(idx);
   }
 
-  while (wave.length) {
-    // Перемешиваем порядок роста — иначе очаги расползаются ровными
-    // кружками, а не хаотичными пятнами.
-    for (let k = wave.length - 1; k > 0; k--) {
-      const r = Math.floor(Math.random() * (k + 1));
-      [wave[k], wave[r]] = [wave[r], wave[k]];
+  const neighboursOf = (idx) => {
+    const i = Math.floor(idx / cols);
+    const j = idx % cols;
+    const list = [];
+    for (const [di, dj] of NEIGHBOUR_OFFSETS) {
+      const ni = i + di;
+      if (ni < 0 || ni >= faceRows) continue;
+      list.push(ni * cols + ((j + dj + cols) % cols));
     }
+    return list;
+  };
 
+  while (wave.length) {
+    shuffleInPlace(wave); // иначе очаги расползаются ровными кружками
     const next = [];
     for (const idx of wave) {
-      const i = Math.floor(idx / cols);
-      const j = idx % cols;
       const region = regionOf[idx];
-      const neighbours = [
-        [i - 1, j],
-        [i + 1, j],
-        [i, (j - 1 + cols) % cols],
-        [i, (j + 1) % cols],
-      ];
-      for (const [ni, nj] of neighbours) {
-        if (ni < 0 || ni >= faceRows) continue;
-        const nIdx = ni * cols + nj;
+      for (const nIdx of neighboursOf(idx)) {
         if (regionOf[nIdx] === -1) {
           regionOf[nIdx] = region;
           next.push(nIdx);
@@ -126,10 +145,28 @@ export function growPieces(rows, cols, pieceCount) {
     wave = next;
   }
 
+  // Рвём границы: грань, у которой большинство соседей — из чужого
+  // кусочка, переходит к одному из них. Работает только с уже занятыми
+  // гранями, поэтому дыр появиться не может. Несколько проходов подряд —
+  // иначе при мелкой сетке правки едва заметны на фоне общей формы.
+  for (let pass = 0; pass < 3; pass++) {
+    for (let idx = 0; idx < total; idx++) {
+      if (Math.random() > 0.5) continue;
+      const foreign = neighboursOf(idx).filter((n) => regionOf[n] !== regionOf[idx]);
+      if (foreign.length >= 3) {
+        regionOf[idx] = regionOf[foreign[Math.floor(Math.random() * foreign.length)]];
+      }
+    }
+  }
+
   return regionOf;
 }
 
-/** Собирает геометрию одного кусочка, используя уже готовые гладкие нормали сетки. */
+/**
+ * Собирает геометрию одного кусочка, используя уже готовые гладкие нормали
+ * сетки. Возвращает null, если очагу не досталось ни одной грани (в теории
+ * возможно после эрозии границ) — тогда кусочек просто не создаётся.
+ */
 export function buildPieceGeometry(grid, pieceIndex, regionOf) {
   const { positions, uvs, normals, rows, cols } = grid;
   const facePositions = [];
@@ -162,6 +199,8 @@ export function buildPieceGeometry(grid, pieceIndex, regionOf) {
       faceUvs.push(...uv00, ...uv01, ...uv11);
     }
   }
+
+  if (!facePositions.length) return null;
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(facePositions, 3));

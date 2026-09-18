@@ -3,8 +3,8 @@ import { EGG } from './eggShape.js';
 import { buildShellGrid, growPieces, buildPieceGeometry, pieceMidAngle, pieceLocalCentroid, flyAway } from './shellPieces.js';
 
 const FOIL_COLORS = [0xff4d6d, 0xffd166, 0x4cc9f0, 0x80ed99, 0xf72585, 0xffa552, 0x9b5de5, 0x00bbf9];
-const PROFILE_STEPS = 30;
-const ANGULAR_SEGMENTS = 32;
+const PROFILE_STEPS = 52;
+const ANGULAR_SEGMENTS = 66;
 
 /**
  * Слой фольги: цельная блестящая оболочка без единого шва, пока её не
@@ -21,6 +21,7 @@ export function createFoil(pieceCount = 8, debris) {
   const pieces = [];
   for (let p = 0; p < pieceCount; p++) {
     const geometry = buildPieceGeometry(grid, p, regionOf);
+    if (!geometry) continue; // очагу не досталось ни одной грани — редкость, пропускаем
     const material = new THREE.MeshStandardMaterial({
       color: FOIL_COLORS[p % FOIL_COLORS.length],
       metalness: 0.85,

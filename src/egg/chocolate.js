@@ -3,8 +3,8 @@ import { EGG } from './eggShape.js';
 import { animate } from '../utils.js';
 import { buildShellGrid, growPieces, buildPieceGeometry, pieceMidAngle, pieceLocalCentroid, flyAway } from './shellPieces.js';
 
-const PROFILE_STEPS = 32;
-const ANGULAR_SEGMENTS = 36;
+const PROFILE_STEPS = 56;
+const ANGULAR_SEGMENTS = 72;
 export const CHOCOLATE_PIECES = 14; // на столько неровных кусков делится скорлупа
 
 /** Текстура шоколада: тёплый коричневый с лёгкими крапинками. */
@@ -48,6 +48,7 @@ export function createChocolate(debris) {
   const pieces = [];
   for (let p = 0; p < CHOCOLATE_PIECES; p++) {
     const geometry = buildPieceGeometry(grid, p, regionOf);
+    if (!geometry) continue; // очагу не досталось ни одной грани — редкость, пропускаем
     const material = new THREE.MeshStandardMaterial({
       map: texture,
       roughness: 0.6,
