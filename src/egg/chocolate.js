@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
 import { animate } from '../utils.js';
-import { buildVoronoiShell, flyAway } from './shellPieces.js';
+import { buildShellPieces, flyAway } from './shellPieces.js';
 
 export const CHOCOLATE_PIECES = 14; // на столько неровных кусков делится скорлупа
 
@@ -31,16 +31,21 @@ function createChocolateTexture() {
 
 /**
  * Шоколадный слой: цельная гладкая скорлупа без единого шва, пока её не
- * трогали. Внутри уже размечена диаграмма Вороного на неровные
- * многоугольники — каждый клик откалывает один, как если бы ребёнок
- * отламывал шоколад руками, и сквозь дырку сразу виден контейнер внутри.
+ * трогали. Внутри уже размечена сетка на неровные многоугольники — каждый
+ * клик откалывает один, как если бы ребёнок отламывал шоколад руками,
+ * и сквозь дырку сразу виден контейнер внутри.
+ *
+ * topology — та же общая триангуляция, что и у фольги (см. foil.js) —
+ * гарантирует, что шоколад (scale 1.0) нигде не вылезает за фольгу
+ * (scale 1.05), потому что оба слоя используют одни и те же точки
+ * поверхности, просто с разным масштабом радиуса.
  */
-export function createChocolate(debris) {
+export function createChocolate(debris, topology) {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
   const texture = createChocolateTexture();
-  const shards = buildVoronoiShell({ pieceCount: CHOCOLATE_PIECES, scale: 1.0 });
+  const shards = buildShellPieces(topology, { pieceCount: CHOCOLATE_PIECES, scale: 1.0 });
 
   const pieces = [];
   for (const shard of shards) {

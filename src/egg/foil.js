@@ -1,28 +1,34 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
-import { buildVoronoiShell, flyAway } from './shellPieces.js';
+import { buildShellPieces, flyAway } from './shellPieces.js';
 
 const FOIL_COLORS = [0xff4d6d, 0xffd166, 0x4cc9f0, 0x80ed99, 0xf72585, 0xffa552, 0x9b5de5, 0x00bbf9];
 
 /**
  * Слой фольги: цельная блестящая оболочка без единого шва, пока её не
- * тронули. Внутри уже размечена диаграмма Вороного на неровные разноцветные
- * многоугольники — так же, как и шоколад под ней — и каждый клик отрывает
- * один из них.
+ * тронули. Внутри уже размечена сетка на неровные разноцветные
+ * многоугольники — так же, как и шоколад под ней — и клик по конкретному
+ * кусочку отрывает именно его.
+ *
+ * topology — общая для фольги и шоколада триангуляция поверхности
+ * (см. createShellTopology в shellPieces.js): благодаря ей фольга всегда
+ * строго снаружи шоколада, без случайных пересечений.
  */
-export function createFoil(pieceCount = 8, debris) {
+export function createFoil(pieceCount, debris, topology) {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
-  const shards = buildVoronoiShell({ pieceCount, scale: 1.035 });
+  const shards = buildShellPieces(topology, { pieceCount, scale: 1.05 });
 
   const pieces = [];
   shards.forEach((shard, p) => {
     const material = new THREE.MeshStandardMaterial({
       color: FOIL_COLORS[p % FOIL_COLORS.length],
-      metalness: 0.85,
-      roughness: 0.18,
-      envMapIntensity: 1.6,
+      // Помягче металла и бликов, чем раньше — иначе яркий блик засвечивает
+      // весь кусочек и цвета почти не отличить друг от друга.
+      metalness: 0.55,
+      roughness: 0.35,
+      envMapIntensity: 1.0,
       side: THREE.DoubleSide,
     });
 

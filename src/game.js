@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createFoil } from './egg/foil.js';
 import { createChocolate } from './egg/chocolate.js';
+import { createShellTopology } from './egg/shellPieces.js';
 import { createCapsule, CAPSULE_TOP_Y } from './egg/capsule.js';
 import { FIGURES, createFigure } from './figures/index.js';
 import { createConfetti } from './confetti.js';
@@ -19,12 +20,13 @@ const HINTS = {
 
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
- * Любой клик по экрану двигает текущий этап вперёд — так проще самым маленьким.
  *
- * Кусочки фольги и шоколада откалываются в случайном порядке (не привязаны
- * к месту клика), а яйцо само поворачивается так, чтобы следующий целый
- * кусочек оказался лицом к игроку — получается, будто оно «подставляется»
- * под удар.
+ * Фольга видна и разделена на чётко раскрашенные кусочки — яйцо медленно
+ * крутится само, чтобы все стороны стали доступны, а клик по конкретному
+ * кусочку отрывает именно его (обычный прицельный клик/тап). Шоколад
+ * непрозрачный — под ним не видно, куда именно бить, поэтому там клик
+ * в любом месте экрана просто откалывает следующий целый кусочек, а яйцо
+ * само доворачивается, чтобы он оказался на виду.
  */
 export function createGame({ scene, camera, canvas, ui }) {
   const root = new THREE.Group();
@@ -32,6 +34,8 @@ export function createGame({ scene, camera, canvas, ui }) {
 
   const confetti = createConfetti(scene);
   const fireworks = createFireworks(scene);
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
 
   // Сюда переезжает уже отломанный кусочек фольги/шоколада — он летит
   // и падает в мировых координатах, независимо от того, что яйцо в это
@@ -44,11 +48,13 @@ export function createGame({ scene, camera, canvas, ui }) {
   let pendingTap = false; // клик, сделанный во время анимации, не пропадает
   let elapsed = 0;
 
-  // Вращение яйца: baseRotationY — «целевой» угол (куда мы довернули яйцо),
-  // поверх него всегда идёт лёгкое покачивание для живости сцены.
+  // Вращение яйца: baseRotationY — «целевой» угол (куда мы довернули яйцо
+  // вручную для шоколада), поверх него всегда идёт лёгкое покачивание для
+  // живости сцены. Пока снимают фольгу, яйцо ещё и крутится само (spinning).
   let baseRotationY = 0;
   let swayTime = 0;
   let swayAmplitude = 0.12;
+  let spinning = false;
 
   let foil = null;
   let chocolate = null;
@@ -57,7 +63,7 @@ export function createGame({ scene, camera, canvas, ui }) {
   let figureHolder = null;
   let lastFigureId = null;
   let chocolateTotal = 0;
-  let activeTarget = null; // кусочек фольги/шоколада, который отколется по клику
+  let activeTarget = null; // кусочек шоколада, который отколется по клику (для фольги не нужен)
 
   /**
    * Следующая игрушка — случайная, но не та же, что была только что.
@@ -79,8 +85,12 @@ export function createGame({ scene, camera, canvas, ui }) {
   async function build() {
     ui.showLoading();
 
-    foil = createFoil(FOIL_SEGMENTS, debris);
-    chocolate = createChocolate(debris);
+    // Общая топология для фольги и шоколада — оба слоя используют одни и
+    // те же точки поверхности, поэтому фольга гарантированно не «тонет»
+    // в шоколаде и не отстаёт от него зазором неправильной формы.
+    const topology = createShellTopology();
+    foil = createFoil(FOIL_SEGMENTS, debris, topology);
+    chocolate = createChocolate(debris, topology);
     capsule = createCapsule();
     chocolateTotal = chocolate.remaining;
     root.add(chocolate.group, foil.group, capsule.group);
@@ -97,7 +107,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    pickNewTarget(foil.meshes);
+    spinning = true;
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -155,10 +165,11 @@ export function createGame({ scene, camera, canvas, ui }) {
   }
 
   /**
-   * Выбирает следующий целый кусочек: в первую очередь самый верхний ещё
-   * целый ряд (яйцо «открывается» сверху вниз, как настоящее), а среди
-   * кусочков на этой же высоте — ближайший по углу к текущему повороту,
-   * чтобы яйцо доворачивалось на минимальный угол, а не прыгало по кругу.
+   * Выбирает следующий целый кусочек шоколада: в первую очередь самый
+   * верхний ещё целый ряд (шоколад «открывается» сверху вниз, как
+   * настоящий), а среди кусочков на этой же высоте — ближайший по углу
+   * к текущему повороту, чтобы яйцо доворачивалось на минимальный угол,
+   * а не прыгало по кругу. Для фольги не нужна — там целятся кликом.
    */
   function pickNewTarget(meshes) {
     if (!meshes.length) {
@@ -182,6 +193,22 @@ export function createGame({ scene, camera, canvas, ui }) {
     faceAngle(activeTarget.userData.midAngle);
   }
 
+  /** Кусочек фольги, ближайший на экране к точке клика — на случай промаха. */
+  function nearestFoilMesh(meshes) {
+    let best = null;
+    let bestDist = Infinity;
+    const ndc = new THREE.Vector3();
+    for (const mesh of meshes) {
+      ndc.copy(mesh.userData.centroid).applyMatrix4(mesh.matrixWorld).project(camera);
+      const dist = Math.hypot(ndc.x - pointer.x, ndc.y - pointer.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = mesh;
+      }
+    }
+    return best;
+  }
+
   function advance() {
     if (state === 'idle' || state === 'reveal') return;
     if (busy) {
@@ -189,23 +216,28 @@ export function createGame({ scene, camera, canvas, ui }) {
       return;
     }
 
-    if ((state === 'foil' || state === 'chocolate') && !activeTarget) return;
-
-    pulse();
+    if (state === 'chocolate' && !activeTarget) return;
 
     if (state === 'foil') {
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects(foil.meshes, false)[0];
+      const target = hit ? hit.object : nearestFoilMesh(foil.meshes);
+      if (!target) return;
+
+      pulse();
       audio.sfxFoil();
-      foil.peel(activeTarget);
+      foil.peel(target);
       updateProgress();
 
-      if (foil.remaining > 0) {
-        pickNewTarget(foil.meshes);
-      } else {
+      if (foil.remaining === 0) {
+        spinning = false;
         setState('chocolate');
         pickNewTarget(chocolate.meshes);
       }
       return;
     }
+
+    pulse();
 
     if (state === 'chocolate') {
       chocolate.peel(activeTarget);
@@ -306,6 +338,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     root.scale.setScalar(1);
     baseRotationY = 0;
     swayAmplitude = 0.12;
+    spinning = false;
     activeTarget = null;
     foil = chocolate = capsule = figure = figureHolder = null;
   }
@@ -319,25 +352,37 @@ export function createGame({ scene, camera, canvas, ui }) {
     setBusy(false);
   }
 
-  function onPointerDown() {
+  /** Точка клика в нормализованных координатах экрана — нужна для прицела по фольге. */
+  function setPointerFromEvent(event) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+
+  function onPointerDown(event) {
     audio.unlockAudio();
+    setPointerFromEvent(event);
     advance();
   }
 
   canvas.addEventListener('pointerdown', onPointerDown);
 
-  // Пробел и Enter тоже открывают яйцо — удобно на ноутбуке.
+  // Пробел и Enter тоже открывают яйцо — целятся в центр экрана.
   window.addEventListener('keydown', (event) => {
     if (event.code !== 'Space' && event.code !== 'Enter') return;
     if (document.activeElement?.tagName === 'BUTTON') return;
     event.preventDefault();
     audio.unlockAudio();
+    pointer.set(0, 0);
     advance();
   });
 
   function update(dt) {
     elapsed += dt;
     swayTime += dt;
+    // Пока снимают фольгу, яйцо медленно крутится само, чтобы все стороны
+    // по очереди оказались доступны для клика.
+    if (spinning) baseRotationY += dt * 0.3;
     // Целевой угол плюс лёгкое покачивание — так сцена никогда не выглядит статичной.
     root.rotation.y = baseRotationY + Math.sin(swayTime * 0.7) * swayAmplitude;
     root.position.y = Math.sin(elapsed * 1.3) * 0.03;

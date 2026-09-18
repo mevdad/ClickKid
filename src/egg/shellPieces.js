@@ -209,13 +209,25 @@ function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
 }
 
 /**
- * Строит pieceCount кусочков-многоугольников (из треугольников) для всей
- * поверхности яйца. density определяет, сколько случайных точек берётся
- * для триангуляции — больше точек, мельче и разнообразнее треугольники
- * внутри каждого кусочка.
+ * Считает случайную триангуляцию поверхности яйца один раз — общую для
+ * фольги и шоколада. Это важно: если бы каждый слой триангулировал
+ * поверхность заново своими случайными точками, две грубые многогранные
+ * аппроксимации одной и той же гладкой формы почти никогда не совпадали
+ * бы идеально, и там, где хорда одного слоя случайно прогибалась чуть
+ * наружу, а другого — чуть внутрь, слои могли пересекаться (шоколад
+ * «вылезал» бы сквозь фольгу). Общая сетка вершин решает это: каждый слой
+ * лишь умножает радиус в тех же самых точках на свой scale, поэтому
+ * фольга гарантированно везде строго снаружи шоколада.
  */
-export function buildVoronoiShell({ pieceCount, scale = 1, density = 20 }) {
-  const triangles = triangulateShell(pieceCount * density);
+export function createShellTopology(pointCount = 320) {
+  return triangulateShell(pointCount);
+}
+
+/**
+ * Строит pieceCount кусочков-многоугольников (из треугольников общей
+ * топологии) для одного слоя со своим масштабом.
+ */
+export function buildShellPieces(triangles, { pieceCount, scale = 1 }) {
   const adjacency = buildAdjacency(triangles);
   const groupOf = groupTriangles(triangles, adjacency, pieceCount);
 

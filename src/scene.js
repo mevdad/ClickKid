@@ -32,7 +32,7 @@ export function createScene(canvas) {
   const key = new THREE.DirectionalLight(0xffffff, 2.1);
   key.position.set(3.5, 6, 4.5);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.near = 1;
   key.shadow.camera.far = 20;
   key.shadow.camera.left = -4;
