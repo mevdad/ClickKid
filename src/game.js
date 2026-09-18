@@ -21,12 +21,15 @@ const HINTS = {
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
  *
- * Фольга видна и разделена на чётко раскрашенные кусочки — яйцо медленно
- * крутится само, чтобы все стороны стали доступны, а клик по конкретному
- * кусочку отрывает именно его (обычный прицельный клик/тап). Шоколад
- * непрозрачный — под ним не видно, куда именно бить, поэтому там клик
- * в любом месте экрана просто откалывает следующий целый кусочек, а яйцо
- * само доворачивается, чтобы он оказался на виду.
+ * Фольга видна и разделена на чётко раскрашенные кусочки — клик по
+ * конкретному кусочку отрывает именно его (обычный прицельный клик/тап).
+ * Как только на видимой стороне не остаётся ни одного целого кусочка
+ * (всё, что было спереди, уже сорвали), яйцо само доворачивается к
+ * ближайшему из оставшихся — играющему никогда не приходится смотреть
+ * на пустую сторону, гадая, куда делась фольга. Шоколад непрозрачный —
+ * под ним не видно, куда именно бить, поэтому там клик в любом месте
+ * экрана просто откалывает следующий целый кусочек, а яйцо само
+ * доворачивается, чтобы он оказался на виду.
  */
 export function createGame({ scene, camera, canvas, ui }) {
   const root = new THREE.Group();
@@ -48,13 +51,11 @@ export function createGame({ scene, camera, canvas, ui }) {
   let pendingTap = false; // клик, сделанный во время анимации, не пропадает
   let elapsed = 0;
 
-  // Вращение яйца: baseRotationY — «целевой» угол (куда мы довернули яйцо
-  // вручную для шоколада), поверх него всегда идёт лёгкое покачивание для
-  // живости сцены. Пока снимают фольгу, яйцо ещё и крутится само (spinning).
+  // Вращение яйца: baseRotationY — «целевой» угол, куда яйцо довёрнуто,
+  // поверх него всегда идёт лёгкое покачивание для живости сцены.
   let baseRotationY = 0;
   let swayTime = 0;
   let swayAmplitude = 0.12;
-  let spinning = false;
 
   let foil = null;
   let chocolate = null;
@@ -107,7 +108,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    spinning = true;
+    ensureFoilReachable();
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -209,6 +210,34 @@ export function createGame({ scene, camera, canvas, ui }) {
     return best;
   }
 
+  // Насколько далеко от «прямо на камеру» кусочек ещё считается доступным
+  // для клика — примерно треть оборота в каждую сторону.
+  const FOIL_VISIBLE_ARC = 1.0;
+
+  /**
+   * Следит, чтобы на видимой стороне всегда было что отклеить: если
+   * ближайший к текущему повороту целый кусочек фольги вышел за пределы
+   * удобной для клика дуги (все, что было спереди, уже сорвали, а целые
+   * кусочки остались только сзади), яйцо само доворачивается к нему.
+   * Не ждёт, пока игрок сам догадается покрутить — крутить руками тут
+   * и нечем.
+   */
+  function ensureFoilReachable() {
+    if (!foil || !foil.meshes.length) return;
+    let best = foil.meshes[0];
+    let bestDelta = Infinity;
+    for (const mesh of foil.meshes) {
+      const delta = Math.abs(shortestDelta(baseRotationY, -mesh.userData.midAngle));
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = mesh;
+      }
+    }
+    if (bestDelta > FOIL_VISIBLE_ARC) {
+      faceAngle(best.userData.midAngle);
+    }
+  }
+
   function advance() {
     if (state === 'idle' || state === 'reveal') return;
     if (busy) {
@@ -230,9 +259,10 @@ export function createGame({ scene, camera, canvas, ui }) {
       updateProgress();
 
       if (foil.remaining === 0) {
-        spinning = false;
         setState('chocolate');
         pickNewTarget(chocolate.meshes);
+      } else {
+        ensureFoilReachable();
       }
       return;
     }
@@ -338,7 +368,6 @@ export function createGame({ scene, camera, canvas, ui }) {
     root.scale.setScalar(1);
     baseRotationY = 0;
     swayAmplitude = 0.12;
-    spinning = false;
     activeTarget = null;
     foil = chocolate = capsule = figure = figureHolder = null;
   }
@@ -380,9 +409,6 @@ export function createGame({ scene, camera, canvas, ui }) {
   function update(dt) {
     elapsed += dt;
     swayTime += dt;
-    // Пока снимают фольгу, яйцо медленно крутится само, чтобы все стороны
-    // по очереди оказались доступны для клика.
-    if (spinning) baseRotationY += dt * 0.3;
     // Целевой угол плюс лёгкое покачивание — так сцена никогда не выглядит статичной.
     root.rotation.y = baseRotationY + Math.sin(swayTime * 0.7) * swayAmplitude;
     root.position.y = Math.sin(elapsed * 1.3) * 0.03;

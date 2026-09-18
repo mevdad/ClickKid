@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Delaunay } from 'd3-delaunay';
 import { EGG } from './eggShape.js';
-import { animate, tween, easeOutCubic, rand, randInt } from '../utils.js';
+import { animate, tween, easeOutCubic, rand } from '../utils.js';
 
 /**
  * Общая механика для слоёв, которые «отламываются» кусками — фольга и
@@ -101,75 +101,49 @@ function triangulateShell(pointCount) {
   return kept; // массив треугольников, каждый — [[theta,t], [theta,t], [theta,t]]
 }
 
-/** Строит граф соседства треугольников по общим рёбрам (по «настоящей» позиции точки). */
-function buildAdjacency(triangles) {
-  const edgeMap = new Map();
-  const addEdge = (keyA, keyB, triIndex) => {
-    const key = keyA < keyB ? `${keyA}~${keyB}` : `${keyB}~${keyA}`;
-    if (!edgeMap.has(key)) edgeMap.set(key, []);
-    edgeMap.get(key).push(triIndex);
-  };
-
-  const keys = triangles.map(([a, b, c]) => [pointKey(...a), pointKey(...b), pointKey(...c)]);
-  keys.forEach(([ka, kb, kc], i) => {
-    addEdge(ka, kb, i);
-    addEdge(kb, kc, i);
-    addEdge(kc, ka, i);
-  });
-
-  const adjacency = triangles.map(() => []);
-  for (const triIndexList of edgeMap.values()) {
-    for (const i of triIndexList) {
-      for (const j of triIndexList) {
-        if (i !== j) adjacency[i].push(j);
-      }
-    }
-  }
-  return adjacency;
+/** Расстояние между двумя точками (theta, t) в реальных единицах, с учётом обёртки по кругу. */
+function paramDistance(a, b) {
+  let dTheta = Math.abs(a[0] - b[0]) % (Math.PI * 2);
+  if (dTheta > Math.PI) dTheta = Math.PI * 2 - dTheta;
+  const dt = a[1] - b[1];
+  return Math.hypot(dTheta * EGG.radius, dt * EGG.halfHeight);
 }
 
-/** Группирует треугольники в pieceCount кусочков случайными очагами (как рост «пятен»). */
-function groupTriangles(triangles, adjacency, pieceCount) {
+/**
+ * Группирует треугольники в pieceCount кусочков по принципу «ближайший
+ * случайный очаг» (обычная диаграмма Вороного по центрам треугольников).
+ * В отличие от случайного роста по соседям (BFS), где порядок обработки
+ * решает форму и легко получаются тонкие вытянутые «щупальца», здесь
+ * каждый треугольник просто достаётся тому очагу, что реально ближе —
+ * кусочки выходят компактными и округлыми, как отломанные руками.
+ */
+function groupTriangles(triangles, pieceCount) {
   const total = triangles.length;
-  const groupOf = new Int32Array(total).fill(-1);
-  let wave = [];
+  const centroids = triangles.map(([a, b, c]) => [
+    (a[0] + b[0] + c[0]) / 3,
+    (a[1] + b[1] + c[1]) / 3,
+  ]);
 
-  const shuffled = [...Array(total).keys()];
-  for (let k = shuffled.length - 1; k > 0; k--) {
+  const order = [...Array(total).keys()];
+  for (let k = order.length - 1; k > 0; k--) {
     const r = Math.floor(Math.random() * (k + 1));
-    [shuffled[k], shuffled[r]] = [shuffled[r], shuffled[k]];
+    [order[k], order[r]] = [order[r], order[k]];
   }
-  for (let p = 0; p < pieceCount && p < total; p++) {
-    groupOf[shuffled[p]] = p;
-    wave.push(shuffled[p]);
-  }
+  const seeds = order.slice(0, Math.min(pieceCount, total)).map((i) => centroids[i]);
 
-  while (wave.length) {
-    for (let k = wave.length - 1; k > 0; k--) {
-      const r = Math.floor(Math.random() * (k + 1));
-      [wave[k], wave[r]] = [wave[r], wave[k]];
-    }
-    const next = [];
-    for (const idx of wave) {
-      const group = groupOf[idx];
-      for (const nIdx of adjacency[idx]) {
-        if (groupOf[nIdx] === -1) {
-          groupOf[nIdx] = group;
-          next.push(nIdx);
-        }
+  const groupOf = new Int32Array(total);
+  for (let i = 0; i < total; i++) {
+    let best = 0;
+    let bestDist = Infinity;
+    for (let s = 0; s < seeds.length; s++) {
+      const dist = paramDistance(centroids[i], seeds[s]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = s;
       }
     }
-    wave = next;
+    groupOf[i] = best;
   }
-
-  // На случай отдельных треугольников без пути к очагу (в теории, у полюсов) —
-  // отдаём их первому попавшемуся соседнему кусочку.
-  for (let idx = 0; idx < total; idx++) {
-    if (groupOf[idx] !== -1) continue;
-    const neighbourGroup = adjacency[idx].find((n) => groupOf[n] !== -1);
-    groupOf[idx] = neighbourGroup !== undefined ? groupOf[neighbourGroup] : 0;
-  }
-
   return groupOf;
 }
 
@@ -219,7 +193,7 @@ function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
  * лишь умножает радиус в тех же самых точках на свой scale, поэтому
  * фольга гарантированно везде строго снаружи шоколада.
  */
-export function createShellTopology(pointCount = 320) {
+export function createShellTopology(pointCount = 900) {
   return triangulateShell(pointCount);
 }
 
@@ -228,8 +202,7 @@ export function createShellTopology(pointCount = 320) {
  * топологии) для одного слоя со своим масштабом.
  */
 export function buildShellPieces(triangles, { pieceCount, scale = 1 }) {
-  const adjacency = buildAdjacency(triangles);
-  const groupOf = groupTriangles(triangles, adjacency, pieceCount);
+  const groupOf = groupTriangles(triangles, pieceCount);
 
   const pieces = [];
   for (let p = 0; p < pieceCount; p++) {
