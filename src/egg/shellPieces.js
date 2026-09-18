@@ -214,7 +214,7 @@ function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
  * для триангуляции — больше точек, мельче и разнообразнее треугольники
  * внутри каждого кусочка.
  */
-export function buildVoronoiShell({ pieceCount, scale = 1, density = 5 }) {
+export function buildVoronoiShell({ pieceCount, scale = 1, density = 20 }) {
   const triangles = triangulateShell(pieceCount * density);
   const adjacency = buildAdjacency(triangles);
   const groupOf = groupTriangles(triangles, adjacency, pieceCount);
