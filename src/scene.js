@@ -61,8 +61,8 @@ export function createScene(canvas) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const bokeh = createBokeh();
-  scene.add(bokeh.group);
+  const bubbles = createBubbles();
+  scene.add(bubbles.group);
 
   function resize() {
     const width = canvas.clientWidth || window.innerWidth;
@@ -76,36 +76,54 @@ export function createScene(canvas) {
     camera.lookAt(0, 1.4, 0);
   }
 
-  return { renderer, scene, camera, resize, updateBackground: bokeh.update };
+  return { renderer, scene, camera, resize, updateBackground: bubbles.update };
 }
 
-/** Медленно плывущие пастельные шарики на фоне — просто для настроения. */
-function createBokeh() {
+/** Медленно всплывающие мыльные пузырьки на фоне — блик + лёгкое покачивание. */
+function createBubbles() {
   const group = new THREE.Group();
-  const colors = [0xffd9ec, 0xd9f0ff, 0xfff3c4, 0xdcffe0, 0xe8dcff];
-  const balls = [];
+  const colors = [0xffe3f3, 0xdcf4ff, 0xfff6d1, 0xe3ffe6, 0xefe3ff];
+  const bubbles = [];
 
-  for (let i = 0; i < 14; i++) {
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(rand(0.18, 0.5), 20, 16),
-      new THREE.MeshBasicMaterial({
+  for (let i = 0; i < 16; i++) {
+    const radius = rand(0.14, 0.42);
+    const bubble = new THREE.Group();
+
+    const shell = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 20, 16),
+      new THREE.MeshStandardMaterial({
         color: colors[i % colors.length],
         transparent: true,
-        opacity: rand(0.25, 0.5),
+        opacity: rand(0.22, 0.4),
+        roughness: 0.05,
+        metalness: 0,
+        envMapIntensity: 1.8,
       })
     );
-    mesh.position.set(rand(-7, 7), rand(-1, 5), rand(-9, -3));
-    group.add(mesh);
-    balls.push({ mesh, speed: rand(0.12, 0.35), phase: rand(0, Math.PI * 2) });
+    bubble.add(shell);
+
+    // Яркий блик — то, что делает шарик похожим на мыльный пузырь.
+    const shine = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 0.22, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 })
+    );
+    shine.position.set(-radius * 0.35, radius * 0.4, radius * 0.7);
+    bubble.add(shine);
+
+    bubble.position.set(rand(-7, 7), rand(-1, 5), rand(-9, -3));
+    group.add(bubble);
+    bubbles.push({ bubble, speed: rand(0.15, 0.4), phase: rand(0, Math.PI * 2), wobbleSpeed: rand(1.2, 2.2) });
   }
 
   function update(dt, elapsed) {
-    for (const ball of balls) {
-      ball.mesh.position.y += ball.speed * dt;
-      ball.mesh.position.x += Math.sin(elapsed * 0.4 + ball.phase) * dt * 0.25;
-      if (ball.mesh.position.y > 5.5) {
-        ball.mesh.position.y = -1.5;
-        ball.mesh.position.x = rand(-7, 7);
+    for (const b of bubbles) {
+      b.bubble.position.y += b.speed * dt;
+      b.bubble.position.x += Math.sin(elapsed * 0.4 + b.phase) * dt * 0.25;
+      const wobble = 1 + Math.sin(elapsed * b.wobbleSpeed + b.phase) * 0.05;
+      b.bubble.scale.setScalar(wobble);
+      if (b.bubble.position.y > 5.5) {
+        b.bubble.position.y = -1.5;
+        b.bubble.position.x = rand(-7, 7);
       }
     }
   }

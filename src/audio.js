@@ -116,3 +116,14 @@ export function sfxFanfare() {
 export function sfxTap() {
   playTone({ freq: 880, slideTo: 1320, duration: 0.09, type: 'sine', gain: 0.08 });
 }
+
+/** Хлопок салюта — один залп фейерверка. */
+export function sfxBoom() {
+  playTone({ freq: 160, slideTo: 45, duration: 0.32, type: 'sine', gain: 0.26 });
+  playNoise({ duration: 0.28, type: 'bandpass', freq: 1300, q: 0.6, gain: 0.2 });
+  // Несколько убывающих «искр» после хлопка.
+  for (let i = 0; i < 5; i++) {
+    const freq = 900 + Math.random() * 1200;
+    playTone({ freq, slideTo: freq * 0.3, duration: 0.15, type: 'triangle', gain: 0.06, delay: 0.08 + i * 0.05 });
+  }
+}

@@ -1,42 +1,48 @@
 import * as THREE from 'three';
-import { EGG } from './egg/eggShape.js';
 import { createFoil } from './egg/foil.js';
 import { createChocolate } from './egg/chocolate.js';
 import { createCapsule, CAPSULE_TOP_Y } from './egg/capsule.js';
 import { FIGURES, createFigure } from './figures/index.js';
 import { createConfetti } from './confetti.js';
+import { createFireworks } from './fireworks.js';
 import * as audio from './audio.js';
 import { tween, clearAnimations, easeOutBack, easeOutCubic, easeOutElastic } from './utils.js';
 
 const FOIL_SEGMENTS = 8;
-const CHOCOLATE_HITS = 4; // три трещины + удар, который разбивает скорлупу
 const CAPSULE_HITS = 3;
 
 const HINTS = {
   foil: 'Снимай фольгу!',
-  chocolate: 'Стучи по шоколаду!',
+  chocolate: 'Отламывай шоколад!',
   capsule: 'Крути крышечку!',
 };
 
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
  * Любой клик по экрану двигает текущий этап вперёд — так проще самым маленьким.
+ *
+ * Кусочки фольги и шоколада откалываются в случайном порядке (не привязаны
+ * к месту клика), а яйцо само поворачивается так, чтобы следующий целый
+ * кусочек оказался лицом к игроку — получается, будто оно «подставляется»
+ * под удар.
  */
 export function createGame({ scene, camera, canvas, ui }) {
   const root = new THREE.Group();
   scene.add(root);
 
   const confetti = createConfetti(scene);
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
-  const ndc = new THREE.Vector3();
+  const fireworks = createFireworks(scene);
 
   let state = 'idle';
-  let busy = false;      // идёт анимация перехода между слоями
+  let busy = false;       // идёт анимация перехода между слоями
   let pendingTap = false; // клик, сделанный во время анимации, не пропадает
   let elapsed = 0;
-  let spinning = false; // яйцо крутится, пока его открывают
-  let swayTime = -1;    // после финала игрушка мягко качается лицом к игроку
+
+  // Вращение яйца: baseRotationY — «целевой» угол (куда мы довернули яйцо),
+  // поверх него всегда идёт лёгкое покачивание для живости сцены.
+  let baseRotationY = 0;
+  let swayTime = 0;
+  let swayAmplitude = 0.12;
 
   let foil = null;
   let chocolate = null;
@@ -44,6 +50,8 @@ export function createGame({ scene, camera, canvas, ui }) {
   let figure = null;
   let figureHolder = null;
   let lastFigureId = null;
+  let chocolateTotal = 0;
+  let activeTarget = null; // кусочек фольги/шоколада, который отколется по клику
 
   /**
    * Следующая игрушка — случайная, но не та же, что была только что.
@@ -68,6 +76,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     foil = createFoil(FOIL_SEGMENTS);
     chocolate = createChocolate();
     capsule = createCapsule();
+    chocolateTotal = chocolate.remaining;
     root.add(chocolate.group, foil.group, capsule.group);
 
     const def = nextFigureDef();
@@ -81,8 +90,8 @@ export function createGame({ scene, camera, canvas, ui }) {
     root.add(figureHolder);
 
     ui.hideLoading();
-    spinning = true;
     setState('foil');
+    pickNewTarget(foil.meshes, 1);
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -104,7 +113,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     if (state === 'foil') {
       ui.setProgress(FOIL_SEGMENTS, FOIL_SEGMENTS - foil.remaining);
     } else if (state === 'chocolate') {
-      ui.setProgress(CHOCOLATE_HITS, CHOCOLATE_HITS - chocolate.remaining);
+      ui.setProgress(chocolateTotal, chocolateTotal - chocolate.remaining);
     } else if (state === 'capsule') {
       ui.setProgress(CAPSULE_HITS, CAPSULE_HITS - capsule.remaining);
     } else {
@@ -119,25 +128,39 @@ export function createGame({ scene, camera, canvas, ui }) {
     }, () => root.scale.setScalar(1));
   }
 
-  /** Лепесток фольги, ближайший к точке нажатия на экране. */
-  function nearestMeshToPointer(meshes) {
-    let best = null;
-    let bestDistance = Infinity;
-    for (const mesh of meshes) {
-      mesh.getWorldPosition(ndc);
-      // Геометрия сектора описана вокруг оси яйца, поэтому берём точку
-      // на его середине, а не центр меша.
-      const angle = mesh.userData.midAngle ?? 0;
-      ndc.x += Math.sin(angle) * EGG.radius;
-      ndc.z += Math.cos(angle) * EGG.radius;
-      ndc.project(camera);
-      const distance = Math.hypot(ndc.x - pointer.x, ndc.y - pointer.y);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = mesh;
-      }
+  /** Кратчайший угол поворота от from к to (в диапазоне -π..π). */
+  function shortestDelta(from, to) {
+    const twoPi = Math.PI * 2;
+    let d = (to - from) % twoPi;
+    if (d > Math.PI) d -= twoPi;
+    if (d < -Math.PI) d += twoPi;
+    return d;
+  }
+
+  /**
+   * Доворачивает яйцо так, чтобы кусочек с углом midAngle оказался
+   * лицом к камере. spins добавляет целые обороты для более весёлой,
+   * «крутящейся» подачи — используется для фольги.
+   */
+  function faceAngle(midAngle, spins = 0) {
+    const targetWorld = -midAngle;
+    const delta = shortestDelta(baseRotationY, targetWorld);
+    const spinBonus = spins * Math.PI * 2 * (delta < 0 ? -1 : 1);
+    const from = baseRotationY;
+    const to = from + delta + spinBonus;
+    tween(0.5 + spins * 0.25, (t) => {
+      baseRotationY = from + (to - from) * easeOutCubic(t);
+    });
+  }
+
+  /** Выбирает случайный ещё целый кусочек и поворачивает к нему яйцо. */
+  function pickNewTarget(meshes, spins = 0) {
+    if (!meshes.length) {
+      activeTarget = null;
+      return;
     }
-    return best;
+    activeTarget = meshes[Math.floor(Math.random() * meshes.length)];
+    faceAngle(activeTarget.userData.midAngle, spins);
   }
 
   function advance() {
@@ -147,31 +170,35 @@ export function createGame({ scene, camera, canvas, ui }) {
       return;
     }
 
+    if ((state === 'foil' || state === 'chocolate') && !activeTarget) return;
+
     pulse();
 
     if (state === 'foil') {
-      raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(foil.meshes, false)[0];
-      const petal = hit?.object ?? nearestMeshToPointer(foil.meshes);
-      if (!petal) return;
-
       audio.sfxFoil();
-      foil.peel(petal);
+      foil.peel(activeTarget);
       updateProgress();
 
-      if (foil.remaining === 0) setState('chocolate');
+      if (foil.remaining > 0) {
+        pickNewTarget(foil.meshes, 1);
+      } else {
+        setState('chocolate');
+        pickNewTarget(chocolate.meshes, 0);
+      }
       return;
     }
 
     if (state === 'chocolate') {
-      const result = chocolate.hit();
-      if (result === 'crack') {
+      chocolate.peel(activeTarget);
+      updateProgress();
+
+      if (chocolate.remaining > 0) {
         audio.sfxCrack();
-        updateProgress();
-      } else if (result === 'shatter') {
+        pickNewTarget(chocolate.meshes, 0);
+      } else {
         audio.sfxShatter();
+        activeTarget = null;
         setBusy(true);
-        updateProgress();
         capsule.reveal(() => {
           setState('capsule');
           setBusy(false);
@@ -200,15 +227,17 @@ export function createGame({ scene, camera, canvas, ui }) {
     capsule.settle();
 
     // Доворачиваем яйцо до ближайшего полного оборота, чтобы игрушка
-    // смотрела на игрока, а не стояла спиной.
-    spinning = false;
-    const fromRotation = root.rotation.y;
+    // смотрела на игрока, а не стояла спиной, и усиливаем покачивание —
+    // так фигурка «красуется» перед камерой.
+    const fromRotation = baseRotationY;
     const toRotation = Math.round(fromRotation / (Math.PI * 2)) * Math.PI * 2;
     tween(0.6, (t) => {
-      root.rotation.y = fromRotation + (toRotation - fromRotation) * easeOutCubic(t);
+      baseRotationY = fromRotation + (toRotation - fromRotation) * easeOutCubic(t);
     }, () => {
-      root.rotation.y = 0;
-      swayTime = 0;
+      baseRotationY = 0;
+    });
+    tween(0.6, (t) => {
+      swayAmplitude = 0.12 + 0.18 * t;
     });
 
     figureHolder.visible = true;
@@ -222,8 +251,10 @@ export function createGame({ scene, camera, canvas, ui }) {
       setBusy(false);
     });
 
+    const skyOrigin = new THREE.Vector3(0, CAPSULE_TOP_Y + 1.7, -0.5);
     audio.sfxFanfare();
     confetti.burst(new THREE.Vector3(0, CAPSULE_TOP_Y + 0.5, 0));
+    fireworks.launch(skyOrigin, { count: 5, onBurst: () => audio.sfxBoom() });
     ui.setHint('Ура! Ты открыл сюрприз!');
     ui.clearProgress();
     ui.showReveal(figure.name);
@@ -232,6 +263,7 @@ export function createGame({ scene, camera, canvas, ui }) {
   function teardown() {
     clearAnimations();
     confetti.clear();
+    fireworks.clear();
     foil?.dispose();
     chocolate?.dispose();
     capsule?.dispose();
@@ -246,9 +278,9 @@ export function createGame({ scene, camera, canvas, ui }) {
     }
     root.clear();
     root.scale.setScalar(1);
-    root.rotation.y = 0;
-    spinning = false;
-    swayTime = -1;
+    baseRotationY = 0;
+    swayAmplitude = 0.12;
+    activeTarget = null;
     foil = chocolate = capsule = figure = figureHolder = null;
   }
 
@@ -261,11 +293,8 @@ export function createGame({ scene, camera, canvas, ui }) {
     setBusy(false);
   }
 
-  function onPointerDown(event) {
+  function onPointerDown() {
     audio.unlockAudio();
-    const rect = canvas.getBoundingClientRect();
-    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     advance();
   }
 
@@ -277,19 +306,14 @@ export function createGame({ scene, camera, canvas, ui }) {
     if (document.activeElement?.tagName === 'BUTTON') return;
     event.preventDefault();
     audio.unlockAudio();
-    pointer.set(0, 0);
     advance();
   });
 
   function update(dt) {
     elapsed += dt;
-    // Яйцо медленно вращается и покачивается, чтобы сцена не была статичной.
-    if (spinning) {
-      root.rotation.y += dt * 0.18;
-    } else if (swayTime >= 0) {
-      swayTime += dt;
-      root.rotation.y = Math.sin(swayTime * 0.7) * 0.3;
-    }
+    swayTime += dt;
+    // Целевой угол плюс лёгкое покачивание — так сцена никогда не выглядит статичной.
+    root.rotation.y = baseRotationY + Math.sin(swayTime * 0.7) * swayAmplitude;
     root.position.y = Math.sin(elapsed * 1.3) * 0.03;
     figure?.update(dt, elapsed);
   }
