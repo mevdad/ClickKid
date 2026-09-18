@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
 import { animate } from '../utils.js';
-import { buildShellPieces, flyAway } from './shellPieces.js';
+import { buildShellPieces, biteAway } from './shellPieces.js';
 
 export const CHOCOLATE_PIECES = 14; // на столько неровных кусков делится скорлупа
 
@@ -32,15 +32,16 @@ function createChocolateTexture() {
 /**
  * Шоколадный слой: цельная гладкая скорлупа без единого шва, пока её не
  * трогали. Внутри уже размечена сетка на неровные многоугольники — каждый
- * клик откалывает один, как если бы ребёнок отламывал шоколад руками,
- * и сквозь дырку сразу виден контейнер внутри.
+ * клик «откусывает» один (кусочек сжимается на месте и тает, никуда не
+ * падая — как будто его действительно съели), и сквозь дырку сразу виден
+ * контейнер внутри.
  *
  * topology — та же общая триангуляция, что и у фольги (см. foil.js) —
  * гарантирует, что шоколад (scale 1.0) нигде не вылезает за фольгу
  * (scale 1.05), потому что оба слоя используют одни и те же точки
  * поверхности, просто с разным масштабом радиуса.
  */
-export function createChocolate(debris, topology) {
+export function createChocolate(topology) {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
@@ -86,13 +87,13 @@ export function createChocolate(debris, topology) {
     });
   }
 
-  /** Откалывает конкретный кусочек: он подпрыгивает и улетает с гравитацией. */
+  /** «Откусывает» конкретный кусочек: он сжимается на месте и тает. */
   function peel(mesh) {
     const index = pieces.indexOf(mesh);
     if (index === -1) return false;
     pieces.splice(index, 1);
     shake();
-    flyAway(mesh, { group, debris });
+    biteAway(mesh);
     return true;
   }
 

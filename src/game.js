@@ -21,15 +21,14 @@ const HINTS = {
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
  *
- * Фольга видна и разделена на чётко раскрашенные кусочки — клик по
- * конкретному кусочку отрывает именно его (обычный прицельный клик/тап).
- * Как только на видимой стороне не остаётся ни одного целого кусочка
- * (всё, что было спереди, уже сорвали), яйцо само доворачивается к
- * ближайшему из оставшихся — играющему никогда не приходится смотреть
- * на пустую сторону, гадая, куда делась фольга. Шоколад непрозрачный —
- * под ним не видно, куда именно бить, поэтому там клик в любом месте
- * экрана просто откалывает следующий целый кусочек, а яйцо само
- * доворачивается, чтобы он оказался на виду.
+ * Фольга — цельная обёртка: клик по ней по-настоящему «стирает» фольгу
+ * ровно в месте попадания (хаотичным округлым пятном, без единой прямой
+ * грани), как будто её на самом деле сдирают, а не отламывают кусками.
+ * Шоколад устроен иначе — он ломается на кусочки, и каждый клик
+ * «откусывает» один: кусочек сжимается на месте и тает, никуда не летя
+ * и не падая. Под непрозрачной скорлупой всё равно не видно, куда бить,
+ * поэтому клик там срабатывает в любом месте экрана, а яйцо само
+ * доворачивается, чтобы намеченный кусочек оказался на виду.
  */
 export function createGame({ scene, camera, canvas, ui }) {
   const root = new THREE.Group();
@@ -40,9 +39,8 @@ export function createGame({ scene, camera, canvas, ui }) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  // Сюда переезжает уже отломанный кусочек фольги/шоколада — он летит
-  // и падает в мировых координатах, независимо от того, что яйцо в это
-  // время уже поворачивается к следующей цели.
+  // Сюда летят декоративные обрывки фольги — в мировых координатах,
+  // независимо от того, что яйцо в это время уже поворачивается.
   const debris = new THREE.Group();
   scene.add(debris);
 
@@ -91,7 +89,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     // в шоколаде и не отстаёт от него зазором неправильной формы.
     const topology = createShellTopology();
     foil = createFoil(FOIL_SEGMENTS, debris, topology);
-    chocolate = createChocolate(debris, topology);
+    chocolate = createChocolate(topology);
     capsule = createCapsule();
     chocolateTotal = chocolate.remaining;
     root.add(chocolate.group, foil.group, capsule.group);
@@ -108,7 +106,6 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    ensureFoilReachable();
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -194,48 +191,15 @@ export function createGame({ scene, camera, canvas, ui }) {
     faceAngle(activeTarget.userData.midAngle);
   }
 
-  /** Кусочек фольги, ближайший на экране к точке клика — на случай промаха. */
-  function nearestFoilMesh(meshes) {
-    let best = null;
-    let bestDist = Infinity;
-    const ndc = new THREE.Vector3();
-    for (const mesh of meshes) {
-      ndc.copy(mesh.userData.centroid).applyMatrix4(mesh.matrixWorld).project(camera);
-      const dist = Math.hypot(ndc.x - pointer.x, ndc.y - pointer.y);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = mesh;
-      }
+  /** Пробует попасть по фольге ровно в месте клика; при явном промахе — целится в центр. */
+  function raycastFoil() {
+    raycaster.setFromCamera(pointer, camera);
+    let hit = raycaster.intersectObject(foil.mesh, false)[0];
+    if (!hit) {
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      hit = raycaster.intersectObject(foil.mesh, false)[0];
     }
-    return best;
-  }
-
-  // Насколько далеко от «прямо на камеру» кусочек ещё считается доступным
-  // для клика — примерно треть оборота в каждую сторону.
-  const FOIL_VISIBLE_ARC = 1.0;
-
-  /**
-   * Следит, чтобы на видимой стороне всегда было что отклеить: если
-   * ближайший к текущему повороту целый кусочек фольги вышел за пределы
-   * удобной для клика дуги (все, что было спереди, уже сорвали, а целые
-   * кусочки остались только сзади), яйцо само доворачивается к нему.
-   * Не ждёт, пока игрок сам догадается покрутить — крутить руками тут
-   * и нечем.
-   */
-  function ensureFoilReachable() {
-    if (!foil || !foil.meshes.length) return;
-    let best = foil.meshes[0];
-    let bestDelta = Infinity;
-    for (const mesh of foil.meshes) {
-      const delta = Math.abs(shortestDelta(baseRotationY, -mesh.userData.midAngle));
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        best = mesh;
-      }
-    }
-    if (bestDelta > FOIL_VISIBLE_ARC) {
-      faceAngle(best.userData.midAngle);
-    }
+    return hit;
   }
 
   function advance() {
@@ -248,21 +212,21 @@ export function createGame({ scene, camera, canvas, ui }) {
     if (state === 'chocolate' && !activeTarget) return;
 
     if (state === 'foil') {
-      raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(foil.meshes, false)[0];
-      const target = hit ? hit.object : nearestFoilMesh(foil.meshes);
-      if (!target) return;
+      const hit = raycastFoil();
+      if (!hit) return;
 
       pulse();
       audio.sfxFoil();
-      foil.peel(target);
+      foil.peelAt(hit.uv, hit.point);
       updateProgress();
 
       if (foil.remaining === 0) {
-        setState('chocolate');
-        pickNewTarget(chocolate.meshes);
-      } else {
-        ensureFoilReachable();
+        setBusy(true);
+        foil.finish(() => {
+          setState('chocolate');
+          pickNewTarget(chocolate.meshes);
+          setBusy(false);
+        });
       }
       return;
     }

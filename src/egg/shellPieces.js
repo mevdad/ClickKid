@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Delaunay } from 'd3-delaunay';
 import { EGG } from './eggShape.js';
-import { animate, tween, easeOutCubic, rand } from '../utils.js';
+import { animate, tween, easeOutCubic, easeInCubic, rand } from '../utils.js';
 
 /**
  * Общая механика для слоёв, которые «отламываются» кусками — фольга и
@@ -210,6 +210,75 @@ export function buildShellPieces(triangles, { pieceCount, scale = 1 }) {
     if (built) pieces.push(built);
   }
   return pieces;
+}
+
+/**
+ * Собирает ВСЮ топологию как один цельный меш (без деления на кусочки) —
+ * для слоя-«обёртки», который не ломается на части, а стирается как
+ * текстура (см. foil.js).
+ */
+export function buildFullShellGeometry(triangles, scale = 1) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+
+  for (const tri of triangles) {
+    for (const [theta, t] of tri) {
+      const p = surfacePoint(theta, t, scale);
+      const n = surfaceNormal(theta, t, scale);
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+      uvs.push(theta / (Math.PI * 2), 1 - t / Math.PI);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  return geometry;
+}
+
+/**
+ * «Откусывает» кусочек на месте: он не летит и не падает, а сжимается
+ * к своему центру и тает — как будто его действительно съели. Сначала
+ * короткий «укус»-рывок (кусочек чуть распухает), потом быстрое сжатие.
+ * Масштабируется вокруг СВОЕГО центра (через временную группу-обёртку),
+ * а не центра яйца — иначе выглядело бы, будто кусок улетает внутрь.
+ */
+export function biteAway(mesh, { onDone } = {}) {
+  const parent = mesh.parent;
+  const centroid = mesh.userData.centroid.clone();
+
+  const wrapper = new THREE.Group();
+  wrapper.position.copy(centroid);
+  parent.add(wrapper);
+  mesh.position.sub(centroid);
+  wrapper.add(mesh);
+
+  mesh.material.transparent = true;
+  mesh.material.needsUpdate = true;
+
+  const bulge = 0.15; // доля времени на «укус» перед сжатием
+  let life = 0;
+  const total = 0.32;
+  animate((dt) => {
+    life += dt;
+    const t = Math.min(1, life / total);
+    const scale = t < bulge
+      ? 1 + 0.12 * (t / bulge)
+      : 1.12 * (1 - easeInCubic((t - bulge) / (1 - bulge)));
+    wrapper.scale.setScalar(Math.max(0.0001, scale));
+    mesh.material.opacity = Math.max(0, 1 - t);
+    if (t >= 1) {
+      parent.remove(wrapper);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+      onDone?.();
+      return false;
+    }
+    return true;
+  });
 }
 
 /**

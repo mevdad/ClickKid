@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { createBee } from './bee.js';
 import { createBear } from './bear.js';
 import { createPiglet } from './piglet.js';
+import { createTiger } from './tiger.js';
 
 /**
  * Игрушки внутри яйца.
@@ -16,6 +17,7 @@ export const FIGURES = [
   { id: 'bee', name: 'Пчёлка', create: createBee },
   { id: 'bear', name: 'Медвежонок', create: createBear },
   { id: 'piglet', name: 'Поросёнок', create: createPiglet },
+  { id: 'tiger', name: 'Тигрёнок', create: createTiger },
 ];
 
 const TARGET_HEIGHT = 1.15; // на такую высоту масштабируется любая модель
