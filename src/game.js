@@ -33,6 +33,12 @@ export function createGame({ scene, camera, canvas, ui }) {
   const confetti = createConfetti(scene);
   const fireworks = createFireworks(scene);
 
+  // Сюда переезжает уже отломанный кусочек фольги/шоколада — он летит
+  // и падает в мировых координатах, независимо от того, что яйцо в это
+  // время уже поворачивается к следующей цели.
+  const debris = new THREE.Group();
+  scene.add(debris);
+
   let state = 'idle';
   let busy = false;       // идёт анимация перехода между слоями
   let pendingTap = false; // клик, сделанный во время анимации, не пропадает
@@ -73,8 +79,8 @@ export function createGame({ scene, camera, canvas, ui }) {
   async function build() {
     ui.showLoading();
 
-    foil = createFoil(FOIL_SEGMENTS);
-    chocolate = createChocolate();
+    foil = createFoil(FOIL_SEGMENTS, debris);
+    chocolate = createChocolate(debris);
     capsule = createCapsule();
     chocolateTotal = chocolate.remaining;
     root.add(chocolate.group, foil.group, capsule.group);
@@ -91,7 +97,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    pickNewTarget(foil.meshes, 1);
+    pickNewTarget(foil.meshes);
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -137,30 +143,38 @@ export function createGame({ scene, camera, canvas, ui }) {
     return d;
   }
 
-  /**
-   * Доворачивает яйцо так, чтобы кусочек с углом midAngle оказался
-   * лицом к камере. spins добавляет целые обороты для более весёлой,
-   * «крутящейся» подачи — используется для фольги.
-   */
-  function faceAngle(midAngle, spins = 0) {
+  /** Доворачивает яйцо так, чтобы кусочек с углом midAngle оказался лицом к камере. */
+  function faceAngle(midAngle) {
     const targetWorld = -midAngle;
     const delta = shortestDelta(baseRotationY, targetWorld);
-    const spinBonus = spins * Math.PI * 2 * (delta < 0 ? -1 : 1);
     const from = baseRotationY;
-    const to = from + delta + spinBonus;
-    tween(0.5 + spins * 0.25, (t) => {
+    const to = from + delta;
+    tween(0.4, (t) => {
       baseRotationY = from + (to - from) * easeOutCubic(t);
     });
   }
 
-  /** Выбирает случайный ещё целый кусочек и поворачивает к нему яйцо. */
-  function pickNewTarget(meshes, spins = 0) {
+  /**
+   * Выбирает ближайший к текущему повороту ещё целый кусочек — яйцо
+   * каждый раз доворачивается на минимальный угол к соседнему кусочку,
+   * а не прыгает к случайному месту по всей окружности.
+   */
+  function pickNewTarget(meshes) {
     if (!meshes.length) {
       activeTarget = null;
       return;
     }
-    activeTarget = meshes[Math.floor(Math.random() * meshes.length)];
-    faceAngle(activeTarget.userData.midAngle, spins);
+    let best = meshes[0];
+    let bestDelta = Infinity;
+    for (const mesh of meshes) {
+      const delta = Math.abs(shortestDelta(baseRotationY, -mesh.userData.midAngle));
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = mesh;
+      }
+    }
+    activeTarget = best;
+    faceAngle(activeTarget.userData.midAngle);
   }
 
   function advance() {
@@ -180,10 +194,10 @@ export function createGame({ scene, camera, canvas, ui }) {
       updateProgress();
 
       if (foil.remaining > 0) {
-        pickNewTarget(foil.meshes, 1);
+        pickNewTarget(foil.meshes);
       } else {
         setState('chocolate');
-        pickNewTarget(chocolate.meshes, 0);
+        pickNewTarget(chocolate.meshes);
       }
       return;
     }
@@ -194,7 +208,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
       if (chocolate.remaining > 0) {
         audio.sfxCrack();
-        pickNewTarget(chocolate.meshes, 0);
+        pickNewTarget(chocolate.meshes);
       } else {
         audio.sfxShatter();
         activeTarget = null;
@@ -267,6 +281,13 @@ export function createGame({ scene, camera, canvas, ui }) {
     foil?.dispose();
     chocolate?.dispose();
     capsule?.dispose();
+    debris.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.geometry.dispose();
+        obj.material?.dispose();
+      }
+    });
+    debris.clear();
     if (figureHolder) {
       figureHolder.traverse((obj) => {
         if (obj.isMesh) {
