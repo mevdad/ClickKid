@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
-import { animate, tween, easeOutCubic, easeOutElastic, rand } from '../utils.js';
+import { animate, tween, easeOutCubic, rand } from '../utils.js';
 
 const TWISTS = 3; // два поворота крышки, третий клик её открывает
 
@@ -15,8 +15,9 @@ export const CAPSULE_TOP_Y = CAPSULE_REST_Y + 0.22;
  */
 export function createCapsule() {
   const group = new THREE.Group();
+  // Контейнер сразу на месте, внутри шоколада — как только в скорлупе
+  // появится дырка, его будет видно сквозь неё, а не только в конце.
   group.position.y = EGG.centerY;
-  group.visible = false;
 
   const bodyMaterial = new THREE.MeshStandardMaterial({
     color: 0xffc300,
@@ -93,15 +94,19 @@ export function createCapsule() {
   let twists = 0;
   let opened = false;
 
-  /** Плавное появление контейнера после того, как шоколад разлетелся. */
+  /**
+   * Контейнер уже был виден сквозь дырки в шоколаде — когда скорлупа
+   * разлетается полностью, он просто весело подпрыгивает на своё место.
+   */
   function reveal(onDone) {
-    group.visible = true;
-    group.scale.setScalar(0.6);
-    tween(0.55, (t) => {
-      const e = easeOutElastic(t);
-      group.scale.setScalar(0.6 + 0.4 * e);
-      group.position.y = EGG.centerY - (EGG.centerY - 1.35) * easeOutCubic(t);
-    }, onDone);
+    const fromY = group.position.y;
+    tween(0.5, (t) => {
+      group.scale.setScalar(1 + Math.sin(t * Math.PI) * 0.1);
+      group.position.y = fromY + (1.35 - fromY) * easeOutCubic(t);
+    }, () => {
+      group.scale.setScalar(1);
+      onDone?.();
+    });
   }
 
   /** Клик по контейнеру: поворот крышки или её открытие. */
