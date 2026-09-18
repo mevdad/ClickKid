@@ -1,143 +1,160 @@
 import * as THREE from 'three';
-import { eggProfile } from './eggShape.js';
+import { Delaunay } from 'd3-delaunay';
+import { EGG } from './eggShape.js';
 import { animate, tween, easeOutCubic, rand, randInt } from '../utils.js';
 
 /**
  * Общая механика для слоёв, которые «отламываются» кусками — фольга и
- * шоколад устроены одинаково: цельная гладкая поверхность яйца случайно
- * делится на неровные кусочки (как будто их отламывали руками), и пока
- * ничего не тронуто, швов между ними не видно вообще.
+ * шоколад устроены одинаково: поверхность яйца триангулируется случайными
+ * точками (Делоне), треугольники группируются в кусочки — края получаются
+ * рваными случайными многоугольниками из треугольников, а не ровными
+ * квадратами сетки.
  *
- * Секрет гладкости: сначала считаем нормали для ЦЕЛОЙ (неразрезанной)
- * поверхности через обычный индексированный меш — там соседние треугольники
- * делят вершины, и computeVertexNormals() честно усредняет их, давая
- * гладкое яйцо. Затем каждый кусочек забирает себе те же самые готовые
- * нормали для своих вершин, поэтому даже после разрезания на кусочки
- * поверхность светится гладко, без «граней» на стыках.
+ * Поверхность параметризована двумя числами (theta, t): theta — угол
+ * вокруг оси Y (0..2π), t — параметр профиля яйца (0 — макушка, π — низ,
+ * та же переменная, что и в eggProfile). Позиция и нормаль в любой точке
+ * (theta, t) считаются напрямую по формуле профиля, поэтому нормали
+ * гарантированно гладкие и совпадают у соседних кусочков на общей границе.
  */
 
-/** Строит сетку вершин по поверхности яйца и сразу считает гладкие нормали. */
-export function buildShellGrid({ steps, segments, scale = 1 }) {
-  const profile = eggProfile(steps, scale);
-  const rows = profile.length;
-  const cols = segments;
-  const colsPerRow = cols + 1;
-
-  const position = [];
-  const uv = [];
-  for (let i = 0; i < rows; i++) {
-    const { x: r, y } = profile[i];
-    for (let j = 0; j <= cols; j++) {
-      const theta = (j / cols) * Math.PI * 2;
-      position.push(Math.sin(theta) * r, y, Math.cos(theta) * r);
-      uv.push(j / cols, 1 - i / (rows - 1));
-    }
-  }
-
-  const index = [];
-  for (let i = 0; i < rows - 1; i++) {
-    for (let j = 0; j < cols; j++) {
-      const a = i * colsPerRow + j;
-      const b = a + 1;
-      const c = a + colsPerRow;
-      const d = c + 1;
-      index.push(a, d, c, a, b, d);
-    }
-  }
-
-  // Считаем нормали на цельном индексированном меше — вот откуда берётся гладкость.
-  const fullGeometry = new THREE.BufferGeometry();
-  fullGeometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
-  fullGeometry.setIndex(index);
-  fullGeometry.computeVertexNormals();
-  const normalAttr = fullGeometry.getAttribute('normal');
-
-  const positions = [];
-  const uvs = [];
-  const normals = [];
-  for (let i = 0; i < rows; i++) {
-    const rowPos = [];
-    const rowUv = [];
-    const rowNorm = [];
-    for (let j = 0; j <= cols; j++) {
-      const idx = i * colsPerRow + j;
-      rowPos.push(new THREE.Vector3(position[idx * 3], position[idx * 3 + 1], position[idx * 3 + 2]));
-      rowUv.push([uv[idx * 2], uv[idx * 2 + 1]]);
-      rowNorm.push(new THREE.Vector3(normalAttr.getX(idx), normalAttr.getY(idx), normalAttr.getZ(idx)));
-    }
-    positions.push(rowPos);
-    uvs.push(rowUv);
-    normals.push(rowNorm);
-  }
-
-  fullGeometry.dispose();
-  return { positions, uvs, normals, rows, cols };
+/** Радиус и высота профиля яйца в произвольной точке t. */
+function profileAt(t, scale) {
+  const y = Math.cos(t) * EGG.halfHeight * scale;
+  const r = Math.sin(t) * EGG.radius * scale * (1 - 0.25 * Math.cos(t));
+  return { r, y };
 }
 
-// Соседи по диагонали тоже считаются — иначе очаги растут ровными
-// ромбами со ступенчатым краем строго по сетке (видно как «пиксели»).
-// С диагоналями фронт роста округлее, а край после второго прохода — рваный.
-const NEIGHBOUR_OFFSETS = [
-  [-1, 0], [1, 0], [0, -1], [0, 1],
-  [-1, -1], [-1, 1], [1, -1], [1, 1],
-];
+/** 3D-точка на поверхности яйца для (theta, t). */
+function surfacePoint(theta, t, scale) {
+  const { r, y } = profileAt(t, scale);
+  return new THREE.Vector3(Math.sin(theta) * r, y, Math.cos(theta) * r);
+}
 
-function shuffleInPlace(arr) {
-  for (let k = arr.length - 1; k > 0; k--) {
-    const r = Math.floor(Math.random() * (k + 1));
-    [arr[k], arr[r]] = [arr[r], arr[k]];
-  }
+/** Гладкая аналитическая нормаль поверхности в (theta, t) — не зависит ни от какой сетки. */
+function surfaceNormal(theta, t, scale) {
+  const eps = 1e-3;
+  const a = profileAt(Math.max(1e-4, t - eps), scale);
+  const b = profileAt(Math.min(Math.PI - 1e-4, t + eps), scale);
+  const dr = b.r - a.r;
+  const dy = b.y - a.y;
+  let nr = dy;
+  let ny = -dr;
+  const len = Math.hypot(nr, ny) || 1;
+  nr /= len;
+  ny /= len;
+  return new THREE.Vector3(Math.sin(theta) * nr, ny, Math.cos(theta) * nr);
+}
+
+/** Ключ точки (theta, t), одинаковый для «одной и той же» точки из разных периодических копий. */
+function pointKey(theta, t) {
+  const norm = ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  return `${norm.toFixed(4)}|${t.toFixed(4)}`;
 }
 
 /**
- * «Выращивает» pieceCount неровных кусочков по сетке граней случайными
- * очагами — получаются хаотичные пятна, а не аккуратные дольки, и вместе
- * они покрывают всю поверхность без единого пропуска.
+ * Триангулирует поверхность яйца случайными точками (Делоне). Сама
+ * триангуляция считается трижды по кругу (копии со сдвигом ±2π), чтобы
+ * шов на theta=0/2π не резал треугольники неправильно — так на стыке
+ * у каждой точки есть настоящие соседи по обе стороны.
  *
- * Работает в два прохода:
- * 1. Полное покрытие — очаги растут во все 8 соседних граней, пока не
- *    заполнят всю сетку (гарантированно без дыр).
- * 2. Рваный край — часть граничных граней случайно передаётся соседнему
- *    кусочку, чтобы стык перестал быть ровной линией по сетке и стал
- *    похож на то, что кусок оторвали руками, а не вырезали.
+ * Каждый треугольник из общего (тройного) набора целиком сдвигается на
+ * то же число (кратное 2π), чтобы его центр попал в канонический
+ * диапазон [0, 2π), а затем дублирующиеся треугольники (одна и та же
+ * реальная тройка точек, полученная из разных копий) отбрасываются.
+ * Это даёт ровно одну копию КАЖДОГО треугольника — без пропусков
+ * (в отличие от простого отбора «оставить только то, что и так попало
+ * в диапазон», которое часть треугольников у шва теряло совсем).
  */
-export function growPieces(rows, cols, pieceCount) {
-  const faceRows = rows - 1;
-  const total = faceRows * cols;
-  const regionOf = new Int32Array(total).fill(-1);
-  let wave = [];
+function triangulateShell(pointCount) {
+  const points = [];
+  for (let i = 0; i < pointCount; i++) {
+    points.push([rand(0, Math.PI * 2), rand(0.05, Math.PI - 0.05)]);
+  }
+  // Несколько точек у самых полюсов — иначе Делоне оставит верхушку и
+  // донышко почти без треугольников.
+  for (let k = 0; k < 6; k++) points.push([(k / 6) * Math.PI * 2, 0.015]);
+  for (let k = 0; k < 6; k++) points.push([(k / 6) * Math.PI * 2, Math.PI - 0.015]);
 
-  for (let p = 0; p < pieceCount; p++) {
-    let idx;
-    let attempts = 0;
-    do {
-      idx = randInt(0, faceRows - 1) * cols + randInt(0, cols - 1);
-      attempts++;
-    } while (regionOf[idx] !== -1 && attempts < 200);
-    regionOf[idx] = p;
-    wave.push(idx);
+  const extended = [];
+  for (let copy = -1; copy <= 1; copy++) {
+    for (const [theta, t] of points) extended.push([theta + copy * Math.PI * 2, t]);
   }
 
-  const neighboursOf = (idx) => {
-    const i = Math.floor(idx / cols);
-    const j = idx % cols;
-    const list = [];
-    for (const [di, dj] of NEIGHBOUR_OFFSETS) {
-      const ni = i + di;
-      if (ni < 0 || ni >= faceRows) continue;
-      list.push(ni * cols + ((j + dj + cols) % cols));
-    }
-    return list;
+  const delaunay = Delaunay.from(extended);
+  const { triangles } = delaunay;
+
+  const twoPi = Math.PI * 2;
+  const seen = new Set();
+  const kept = [];
+  for (let i = 0; i < triangles.length; i += 3) {
+    const raw = [extended[triangles[i]], extended[triangles[i + 1]], extended[triangles[i + 2]]];
+
+    const identity = raw.map(([theta, t]) => pointKey(theta, t)).sort().join('/');
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+
+    const centroidTheta = (raw[0][0] + raw[1][0] + raw[2][0]) / 3;
+    const shift = Math.floor(centroidTheta / twoPi) * twoPi;
+    kept.push(raw.map(([theta, t]) => [theta - shift, t]));
+  }
+
+  return kept; // массив треугольников, каждый — [[theta,t], [theta,t], [theta,t]]
+}
+
+/** Строит граф соседства треугольников по общим рёбрам (по «настоящей» позиции точки). */
+function buildAdjacency(triangles) {
+  const edgeMap = new Map();
+  const addEdge = (keyA, keyB, triIndex) => {
+    const key = keyA < keyB ? `${keyA}~${keyB}` : `${keyB}~${keyA}`;
+    if (!edgeMap.has(key)) edgeMap.set(key, []);
+    edgeMap.get(key).push(triIndex);
   };
 
+  const keys = triangles.map(([a, b, c]) => [pointKey(...a), pointKey(...b), pointKey(...c)]);
+  keys.forEach(([ka, kb, kc], i) => {
+    addEdge(ka, kb, i);
+    addEdge(kb, kc, i);
+    addEdge(kc, ka, i);
+  });
+
+  const adjacency = triangles.map(() => []);
+  for (const triIndexList of edgeMap.values()) {
+    for (const i of triIndexList) {
+      for (const j of triIndexList) {
+        if (i !== j) adjacency[i].push(j);
+      }
+    }
+  }
+  return adjacency;
+}
+
+/** Группирует треугольники в pieceCount кусочков случайными очагами (как рост «пятен»). */
+function groupTriangles(triangles, adjacency, pieceCount) {
+  const total = triangles.length;
+  const groupOf = new Int32Array(total).fill(-1);
+  let wave = [];
+
+  const shuffled = [...Array(total).keys()];
+  for (let k = shuffled.length - 1; k > 0; k--) {
+    const r = Math.floor(Math.random() * (k + 1));
+    [shuffled[k], shuffled[r]] = [shuffled[r], shuffled[k]];
+  }
+  for (let p = 0; p < pieceCount && p < total; p++) {
+    groupOf[shuffled[p]] = p;
+    wave.push(shuffled[p]);
+  }
+
   while (wave.length) {
-    shuffleInPlace(wave); // иначе очаги расползаются ровными кружками
+    for (let k = wave.length - 1; k > 0; k--) {
+      const r = Math.floor(Math.random() * (k + 1));
+      [wave[k], wave[r]] = [wave[r], wave[k]];
+    }
     const next = [];
     for (const idx of wave) {
-      const region = regionOf[idx];
-      for (const nIdx of neighboursOf(idx)) {
-        if (regionOf[nIdx] === -1) {
-          regionOf[nIdx] = region;
+      const group = groupOf[idx];
+      for (const nIdx of adjacency[idx]) {
+        if (groupOf[nIdx] === -1) {
+          groupOf[nIdx] = group;
           next.push(nIdx);
         }
       }
@@ -145,83 +162,69 @@ export function growPieces(rows, cols, pieceCount) {
     wave = next;
   }
 
-  // Рвём границы: грань, у которой большинство соседей — из чужого
-  // кусочка, переходит к одному из них. Работает только с уже занятыми
-  // гранями, поэтому дыр появиться не может. Несколько проходов подряд —
-  // иначе при мелкой сетке правки едва заметны на фоне общей формы.
-  for (let pass = 0; pass < 3; pass++) {
-    for (let idx = 0; idx < total; idx++) {
-      if (Math.random() > 0.5) continue;
-      const foreign = neighboursOf(idx).filter((n) => regionOf[n] !== regionOf[idx]);
-      if (foreign.length >= 3) {
-        regionOf[idx] = regionOf[foreign[Math.floor(Math.random() * foreign.length)]];
-      }
-    }
+  // На случай отдельных треугольников без пути к очагу (в теории, у полюсов) —
+  // отдаём их первому попавшемуся соседнему кусочку.
+  for (let idx = 0; idx < total; idx++) {
+    if (groupOf[idx] !== -1) continue;
+    const neighbourGroup = adjacency[idx].find((n) => groupOf[n] !== -1);
+    groupOf[idx] = neighbourGroup !== undefined ? groupOf[neighbourGroup] : 0;
   }
 
-  return regionOf;
+  return groupOf;
+}
+
+/** Собирает геометрию одного кусочка из его треугольников. */
+function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  let sumX = 0, sumY = 0, sumZ = 0, count = 0;
+  let sumSin = 0, sumCos = 0;
+
+  triangles.forEach((tri, i) => {
+    if (groupOf[i] !== pieceIndex) return;
+    for (const [theta, t] of tri) {
+      const p = surfacePoint(theta, t, scale);
+      const n = surfaceNormal(theta, t, scale);
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+      uvs.push(theta / (Math.PI * 2), 1 - t / Math.PI);
+      sumX += p.x; sumY += p.y; sumZ += p.z; count++;
+      sumSin += Math.sin(theta); sumCos += Math.cos(theta);
+    }
+  });
+
+  if (!count) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+
+  return {
+    geometry,
+    centroid: new THREE.Vector3(sumX / count, sumY / count, sumZ / count),
+    midAngle: Math.atan2(sumSin, sumCos),
+  };
 }
 
 /**
- * Собирает геометрию одного кусочка, используя уже готовые гладкие нормали
- * сетки. Возвращает null, если очагу не досталось ни одной грани (в теории
- * возможно после эрозии границ) — тогда кусочек просто не создаётся.
+ * Строит pieceCount кусочков-многоугольников (из треугольников) для всей
+ * поверхности яйца. density определяет, сколько случайных точек берётся
+ * для триангуляции — больше точек, мельче и разнообразнее треугольники
+ * внутри каждого кусочка.
  */
-export function buildPieceGeometry(grid, pieceIndex, regionOf) {
-  const { positions, uvs, normals, rows, cols } = grid;
-  const facePositions = [];
-  const faceNormals = [];
-  const faceUvs = [];
+export function buildVoronoiShell({ pieceCount, scale = 1, density = 5 }) {
+  const triangles = triangulateShell(pieceCount * density);
+  const adjacency = buildAdjacency(triangles);
+  const groupOf = groupTriangles(triangles, adjacency, pieceCount);
 
-  for (let i = 0; i < rows - 1; i++) {
-    for (let j = 0; j < cols; j++) {
-      if (regionOf[i * cols + j] !== pieceIndex) continue;
-
-      const p00 = positions[i][j];
-      const p01 = positions[i][j + 1];
-      const p10 = positions[i + 1][j];
-      const p11 = positions[i + 1][j + 1];
-      const n00 = normals[i][j];
-      const n01 = normals[i][j + 1];
-      const n10 = normals[i + 1][j];
-      const n11 = normals[i + 1][j + 1];
-      const uv00 = uvs[i][j];
-      const uv01 = uvs[i][j + 1];
-      const uv10 = uvs[i + 1][j];
-      const uv11 = uvs[i + 1][j + 1];
-
-      facePositions.push(p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p10.x, p10.y, p10.z);
-      faceNormals.push(n00.x, n00.y, n00.z, n11.x, n11.y, n11.z, n10.x, n10.y, n10.z);
-      faceUvs.push(...uv00, ...uv11, ...uv10);
-
-      facePositions.push(p00.x, p00.y, p00.z, p01.x, p01.y, p01.z, p11.x, p11.y, p11.z);
-      faceNormals.push(n00.x, n00.y, n00.z, n01.x, n01.y, n01.z, n11.x, n11.y, n11.z);
-      faceUvs.push(...uv00, ...uv01, ...uv11);
-    }
+  const pieces = [];
+  for (let p = 0; p < pieceCount; p++) {
+    const built = buildPieceGeometry(triangles, groupOf, p, scale);
+    if (built) pieces.push(built);
   }
-
-  if (!facePositions.length) return null;
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(facePositions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(faceNormals, 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(faceUvs, 2));
-  geometry.computeBoundingBox();
-  return geometry;
-}
-
-/** Средний угол кусочка вокруг оси Y — чтобы яйцо могло довернуться к нему. */
-export function pieceMidAngle(geometry) {
-  const centroid = new THREE.Vector3();
-  geometry.boundingBox.getCenter(centroid);
-  return Math.atan2(centroid.x, centroid.z);
-}
-
-/** Локальный центр кусочка (центр его bounding box) — для расчёта направления полёта. */
-export function pieceLocalCentroid(geometry) {
-  const centroid = new THREE.Vector3();
-  geometry.boundingBox.getCenter(centroid);
-  return centroid;
+  return pieces;
 }
 
 /**
@@ -245,6 +248,11 @@ export function flyAway(mesh, { group, debris, onDone } = {}) {
   }
 
   debris.attach(mesh); // мировая позиция сохраняется, но вращение яйца больше не влияет
+
+  // Прозрачность включаем только на время полёта (для угасания) — пока
+  // кусочек цел и стоит на яйце, непрозрачный материал рисуется надёжнее.
+  mesh.material.transparent = true;
+  mesh.material.needsUpdate = true;
 
   const start = mesh.position.clone();
   const spin = new THREE.Vector3(rand(-6, 6), rand(-6, 6), rand(-6, 6));

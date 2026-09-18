@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/mevdad/ClickKid#readme",
   "dependencies": {
+    "d3-delaunay": "^6.0.4",
     "three": "^0.186.0"
   },
   "devDependencies": {

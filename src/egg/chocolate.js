@@ -1,10 +1,8 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
 import { animate } from '../utils.js';
-import { buildShellGrid, growPieces, buildPieceGeometry, pieceMidAngle, pieceLocalCentroid, flyAway } from './shellPieces.js';
+import { buildVoronoiShell, flyAway } from './shellPieces.js';
 
-const PROFILE_STEPS = 56;
-const ANGULAR_SEGMENTS = 72;
 export const CHOCOLATE_PIECES = 14; // на столько неровных кусков делится скорлупа
 
 /** Текстура шоколада: тёплый коричневый с лёгкими крапинками. */
@@ -33,37 +31,33 @@ function createChocolateTexture() {
 
 /**
  * Шоколадный слой: цельная гладкая скорлупа без единого шва, пока её не
- * трогали. Внутри уже размечена сетка на неровные кусочки — каждый клик
- * откалывает один, как если бы ребёнок отламывал шоколад руками, и сквозь
- * дырку сразу виден контейнер внутри.
+ * трогали. Внутри уже размечена диаграмма Вороного на неровные
+ * многоугольники — каждый клик откалывает один, как если бы ребёнок
+ * отламывал шоколад руками, и сквозь дырку сразу виден контейнер внутри.
  */
 export function createChocolate(debris) {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
   const texture = createChocolateTexture();
-  const grid = buildShellGrid({ steps: PROFILE_STEPS, segments: ANGULAR_SEGMENTS, scale: 1.0 });
-  const regionOf = growPieces(grid.rows, grid.cols, CHOCOLATE_PIECES);
+  const shards = buildVoronoiShell({ pieceCount: CHOCOLATE_PIECES, scale: 1.0 });
 
   const pieces = [];
-  for (let p = 0; p < CHOCOLATE_PIECES; p++) {
-    const geometry = buildPieceGeometry(grid, p, regionOf);
-    if (!geometry) continue; // очагу не досталось ни одной грани — редкость, пропускаем
+  for (const shard of shards) {
     const material = new THREE.MeshStandardMaterial({
       map: texture,
       roughness: 0.6,
       metalness: 0,
       envMapIntensity: 0.35,
       side: THREE.DoubleSide,
-      transparent: true,
     });
 
-    const mesh = new THREE.Mesh(geometry, material);
+    const mesh = new THREE.Mesh(shard.geometry, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.layer = 'chocolate';
-    mesh.userData.centroid = pieceLocalCentroid(geometry);
-    mesh.userData.midAngle = pieceMidAngle(geometry);
+    mesh.userData.centroid = shard.centroid;
+    mesh.userData.midAngle = shard.midAngle;
 
     group.add(mesh);
     pieces.push(mesh);
