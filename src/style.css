@@ -1,0 +1,239 @@
+:root {
+  --ink: #4a2c5a;
+  --card: #fffdf7;
+  --accent: #ff4d8d;
+  --accent-dark: #d62f6d;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-family: 'Nunito', 'Segoe UI Rounded', 'Trebuchet MS', system-ui, sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at 50% 18%, #fff6fb 0%, #ffe3f1 38%, #cfe9ff 100%);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+/* Слой интерфейса не перехватывает клики — они должны доходить до сцены. */
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+}
+
+#ui button {
+  pointer-events: auto;
+}
+
+#hud {
+  text-align: center;
+  width: 100%;
+  max-width: 640px;
+}
+
+#hint {
+  margin: 0;
+  font-size: clamp(1.25rem, 4.5vw, 2rem);
+  font-weight: 900;
+  line-height: 1.2;
+  text-shadow: 0 2px 0 #fff, 0 6px 18px rgba(120, 60, 120, 0.25);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+#hint.swap {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+#progress {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  min-height: 26px;
+}
+
+.pip {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 3px 8px rgba(120, 60, 120, 0.2);
+  transition: transform 0.25s ease, background 0.25s ease, opacity 0.25s ease;
+}
+
+.pip.done {
+  background: var(--accent);
+  transform: scale(0.65);
+  opacity: 0.45;
+}
+
+#mute {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: 14px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  font-size: 1.5rem;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 12px rgba(120, 60, 120, 0.25);
+  cursor: pointer;
+  line-height: 1;
+}
+
+#mute:active {
+  transform: scale(0.92);
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(255, 245, 250, 0.72);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 28px;
+  padding: 28px 30px 32px;
+  text-align: center;
+  box-shadow: 0 18px 40px rgba(120, 60, 120, 0.28);
+  max-width: 460px;
+  animation: pop-in 0.4s cubic-bezier(0.2, 1.4, 0.5, 1);
+}
+
+.card h1 {
+  margin: 0 0 10px;
+  font-size: clamp(1.7rem, 7vw, 2.6rem);
+  font-weight: 900;
+}
+
+.subtitle {
+  margin: 0 0 22px;
+  font-size: clamp(0.95rem, 3.6vw, 1.15rem);
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.big-button {
+  font-family: inherit;
+  font-size: clamp(1.1rem, 4.5vw, 1.5rem);
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  border: none;
+  border-radius: 999px;
+  padding: 16px 36px;
+  cursor: pointer;
+  box-shadow: 0 8px 0 var(--accent-dark), 0 14px 24px rgba(214, 47, 109, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.big-button:active {
+  transform: translateY(6px);
+  box-shadow: 0 2px 0 var(--accent-dark), 0 8px 14px rgba(214, 47, 109, 0.3);
+}
+
+#reveal {
+  position: absolute;
+  left: 50%;
+  bottom: max(26px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 18px 26px 24px;
+  pointer-events: auto;
+}
+
+.reveal-title {
+  margin: 0;
+  font-size: 1.05rem;
+  opacity: 0.75;
+}
+
+.reveal-name {
+  margin: 2px 0 16px;
+  font-size: clamp(1.6rem, 6vw, 2.2rem);
+  font-weight: 900;
+  color: var(--accent-dark);
+}
+
+.hidden {
+  display: none !important;
+}
+
+.spinner {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 6px solid rgba(255, 77, 141, 0.25);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+#reveal.card {
+  animation: pop-in-centered 0.45s cubic-bezier(0.2, 1.4, 0.5, 1);
+}
+
+@keyframes pop-in-centered {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  #reveal.card {
+    animation: none;
+  }
+}

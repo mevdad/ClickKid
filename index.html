@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffd9ec" />
+    <meta name="description" content="Детская игра: открой яйцо с сюрпризом — сними фольгу, разбей шоколад и достань игрушку." />
+    <title>Яйцо с сюрпризом</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥚</text></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <div id="ui">
+      <header id="hud">
+        <p id="hint">Нажимай на яйцо!</p>
+        <div id="progress" aria-hidden="true"></div>
+      </header>
+
+      <button id="mute" type="button" aria-label="Выключить звук">🔊</button>
+
+      <div id="reveal" class="card hidden">
+        <p class="reveal-title">Ура! Это</p>
+        <p id="figure-name" class="reveal-name">Пчёлка</p>
+        <button id="again" type="button" class="big-button">Открыть ещё яйцо!</button>
+      </div>
+
+      <div id="start" class="overlay">
+        <div class="card">
+          <h1>Яйцо с сюрпризом</h1>
+          <p class="subtitle">Сними фольгу, разбей шоколад и открой контейнер — внутри игрушка!</p>
+          <button id="play" type="button" class="big-button">Играть!</button>
+        </div>
+      </div>
+
+      <div id="loading" class="overlay hidden">
+        <div class="spinner" role="status" aria-label="Загрузка"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
