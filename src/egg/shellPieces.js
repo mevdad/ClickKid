@@ -25,7 +25,7 @@ function profileAt(t, scale) {
 }
 
 /** 3D-точка на поверхности яйца для (theta, t). */
-function surfacePoint(theta, t, scale) {
+export function surfacePoint(theta, t, scale) {
   const { r, y } = profileAt(t, scale);
   return new THREE.Vector3(Math.sin(theta) * r, y, Math.cos(theta) * r);
 }

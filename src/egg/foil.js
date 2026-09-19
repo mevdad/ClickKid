@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { EGG } from './eggShape.js';
-import { buildFullShellGeometry } from './shellPieces.js';
+import { buildFullShellGeometry, surfacePoint } from './shellPieces.js';
 import { animate, rand } from '../utils.js';
 
 const FOIL_COLORS = [0xff4d6d, 0xffd166, 0x4cc9f0, 0x80ed99, 0xf72585, 0xffa552, 0x9b5de5, 0x00bbf9];
@@ -8,32 +8,45 @@ const TEXTURE_W = 1024;
 const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте)
 
 /**
- * Заранее считает контуры цветных пятен узора (форма и положение — как в
- * исходном рисунке), чтобы при стирании можно было оторвать задетое пятно
- * ровно по его контуру, а не разрезать его пополам случайным кругом.
+ * Заранее считает контуры цветных участков узора — ровно clicksNeeded штук,
+ * распределённых по кругу (с небольшим случайным разбросом, чтобы не
+ * выглядело механически), по одному на каждый клик. У каждого участка
+ * известен его угол (midAngle) — по нему яйцо потом доворачивается так,
+ * чтобы очередной ещё целый участок оказался лицом к игроку.
  */
-function buildFoilPatches(canvas) {
+function buildFoilPatches(canvas, count) {
   const patches = [];
-  for (let i = 0; i < 30; i++) {
-    const color = FOIL_COLORS[Math.floor(Math.random() * FOIL_COLORS.length)];
-    const cx = rand(0, canvas.width);
-    // Среднее двух случайных чисел сгущает пятна к экватору — у самых
+  for (let i = 0; i < count; i++) {
+    const color = FOIL_COLORS[i % FOIL_COLORS.length];
+    const baseTheta = (i / count) * Math.PI * 2;
+    const theta = ((baseTheta + rand(-0.3, 0.3)) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    const cx = (theta / (Math.PI * 2)) * canvas.width;
+    // Среднее двух случайных чисел сгущает участки к экватору — у самых
     // полюсов текстура сильно сжимается по ширине, и круглое пятно там
     // растягивается в вертикальную полосу.
     const cy = ((Math.random() + Math.random()) / 2) * canvas.height;
-    const r = rand(60, 140);
+    const r = rand(115, 175); // участков немного (по числу кликов) — каждый крупный
     const path = new Path2D();
-    // Пятно из нескольких смещённых кругов — неровный, но округлый контур.
+    // Участок из нескольких смещённых кругов — неровный, но округлый контур.
     for (let k = 0; k < 4; k++) {
       path.moveTo(cx, cy);
       path.arc(cx + rand(-r * 0.4, r * 0.4), cy + rand(-r * 0.4, r * 0.4), r * rand(0.6, 1), 0, Math.PI * 2);
     }
-    patches.push({ cx, cy, r, path, color, torn: false });
+    patches.push({
+      cx,
+      cy,
+      r,
+      path,
+      color,
+      torn: false,
+      midAngle: theta,
+      t: (cy / canvas.height) * Math.PI,
+    });
   }
   return patches;
 }
 
-/** Красочный узор фольги: светлый металлический фон и цветные пятна по заданным контурам. */
+/** Красочный узор фольги: светлый металлический фон и цветные участки по контурам. */
 function paintFoilPattern(ctx, canvas, patches) {
   const base = ctx.createLinearGradient(0, 0, 0, canvas.height);
   base.addColorStop(0, '#fff4f9');
@@ -47,21 +60,7 @@ function paintFoilPattern(ctx, canvas, patches) {
   }
 }
 
-/** Создаёт canvas-текстуру фольги с альфа-каналом (для последующего «стирания»). */
-function createFoilTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = TEXTURE_W;
-  canvas.height = TEXTURE_H;
-  const ctx = canvas.getContext('2d');
-  const patches = buildFoilPatches(canvas);
-  paintFoilPattern(ctx, canvas, patches);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return { canvas, ctx, texture, patches };
-}
-
-/** Смещения по X для стирания у самого шва (theta = 0 / 2π), чтобы пятно не обрывалось. */
+/** Смещения по X для отрисовки у самого шва (theta = 0 / 2π), чтобы участок не обрывался. */
 function seamOffsets(x, width, r) {
   const offsets = [0];
   if (x - r < 0) offsets.push(width);
@@ -69,132 +68,24 @@ function seamOffsets(x, width, r) {
   return offsets;
 }
 
-/** Кратчайшее расстояние по X с учётом шва (theta = 0 / 2π склеены). */
-function wrapDX(dx, width) {
-  const half = width / 2;
-  if (dx > half) return dx - width;
-  if (dx < -half) return dx + width;
-  return dx;
-}
-
-/** Доля ещё непрозрачных (не сорванных) пикселей в окне вокруг точки. */
-function opaqueFraction(imageData, cx, cy, radius) {
-  const { data, width, height } = imageData;
-  const step = Math.max(4, Math.floor(radius / 6));
-  let total = 0;
-  let opaque = 0;
-  for (let dy = -radius; dy <= radius; dy += step) {
-    const y = Math.round(cy + dy);
-    if (y < 0 || y >= height) continue;
-    for (let dx = -radius; dx <= radius; dx += step) {
-      if (dx * dx + dy * dy > radius * radius) continue;
-      let x = Math.round(cx + dx);
-      x = ((x % width) + width) % width;
-      total++;
-      if (data[(y * width + x) * 4 + 3] > 20) opaque++;
-    }
-  }
-  return total ? opaque / total : 0;
-}
-
-/** Ищет ближайшую (с учётом шва) точку, где фольга ещё осталась. */
-function findNearestFoil(imageData, cx, cy) {
-  const { data, width, height } = imageData;
-  const step = 10;
-  let best = null;
-  let bestDist = Infinity;
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x += step) {
-      if (data[(y * width + x) * 4 + 3] <= 20) continue;
-      const dx = wrapDX(x - cx, width);
-      const dy = y - cy;
-      const dist = dx * dx + dy * dy;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = { x, y };
-      }
-    }
-  }
-  return best;
-}
-
-/** Цвет непрозрачного пикселя в точке (для отрыва обрывка нужного цвета), либо null. */
-function sampleColor(imageData, x, y) {
-  const { data, width, height } = imageData;
-  let px = Math.round(x) % width;
-  if (px < 0) px += width;
-  const py = Math.min(height - 1, Math.max(0, Math.round(y)));
-  const idx = (py * width + px) * 4;
-  if (data[idx + 3] < 10) return null;
-  return (data[idx] << 16) | (data[idx + 1] << 8) | data[idx + 2];
-}
-
-/**
- * Стирает альфу текстуры хаотичным, но округлым пятном в точке (u, v).
- * Если рядом с точкой клика фольги почти не осталось (на этой стороне яйца
- * её уже сорвали), стирание доворачивается к ближайшему месту, где она ещё
- * есть — вместо того чтобы впустую скрести пустоту. Любое цветное пятно
- * узора, которого коснулось стирание, отрывается целиком по своему
- * контуру, а не режется пополам случайным кругом.
- */
-function eraseAt(ctx, canvas, patches, u, v, radius) {
-  let cx = u * canvas.width;
-  let cy = (1 - v) * canvas.height;
-
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-  if (opaqueFraction(imageData, cx, cy, radius) < 0.12) {
-    const target = findNearestFoil(imageData, cx, cy);
-    if (target) {
-      cx = target.x;
-      cy = target.y;
-    }
-  }
-
-  const fallbackColor = sampleColor(imageData, cx, cy);
-
+/** Стирает альфу текстуры ровно по контуру участка — целиком, одним движением. */
+function tearPatch(ctx, canvas, patch) {
+  patch.torn = true;
   ctx.globalCompositeOperation = 'destination-out';
-
-  const blobCount = 5 + Math.floor(Math.random() * 4);
-  for (let i = 0; i < blobCount; i++) {
-    const angle = rand(0, Math.PI * 2);
-    const dist = rand(0, radius * 0.55);
-    const r = radius * rand(0.55, 1.0);
-    const bx = cx + Math.cos(angle) * dist;
-    const by = cy + Math.sin(angle) * dist;
-    for (const dx of seamOffsets(bx, canvas.width, r)) {
-      ctx.beginPath();
-      ctx.arc(bx + dx, by, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  for (const dx of seamOffsets(patch.cx, canvas.width, patch.r)) {
+    ctx.save();
+    ctx.translate(dx, 0);
+    ctx.fill(patch.path);
+    ctx.restore();
   }
-
-  let patchColor = null;
-  for (const patch of patches) {
-    if (patch.torn) continue;
-    const dx = wrapDX(patch.cx - cx, canvas.width);
-    const dy = patch.cy - cy;
-    if (Math.hypot(dx, dy) > radius + patch.r * 0.6) continue;
-    for (const sdx of seamOffsets(patch.cx, canvas.width, patch.r)) {
-      ctx.save();
-      ctx.translate(sdx, 0);
-      ctx.fill(patch.path);
-      ctx.restore();
-    }
-    patch.torn = true;
-    if (patchColor === null) patchColor = patch.color;
-  }
-
   ctx.globalCompositeOperation = 'source-over';
-  return patchColor ?? fallbackColor;
 }
 
-/** Маленький блестящий обрывок фольги, улетающий с места клика — для отдачи. */
-function spawnScrap(worldPoint, debris, tornColor) {
+/** Маленький блестящий обрывок фольги, улетающий с места отрыва — для отдачи. */
+function spawnScrap(worldPoint, debris, color) {
   const size = rand(0.07, 0.13);
   const geometry = new THREE.SphereGeometry(size, 8, 6);
   geometry.scale(1, 0.3, 0.7);
-  const color = tornColor ?? FOIL_COLORS[Math.floor(Math.random() * FOIL_COLORS.length)];
   const material = new THREE.MeshStandardMaterial({
     color,
     metalness: 0.6,
@@ -240,17 +131,32 @@ function spawnScrap(worldPoint, debris, tornColor) {
 /**
  * Слой фольги: одна цельная гладкая оболочка (без единого треугольного
  * шва в силуэте — форма ровно повторяет поверхность яйца), обёрнутая
- * в цветной узор. Клик не отламывает кусок геометрии, а по-настоящему
- * «стирает» фольгу в месте попадания — хаотичным, но округлым пятном,
- * как будто её на самом деле сдирают/царапают. Сквозь стёртое пятно сразу
- * виден шоколад под ней.
+ * в цветной узор из clicksNeeded участков. Каждый клик срывает ровно один
+ * ещё целый участок целиком по его контуру — хаотичным, но округлым
+ * пятном, как будто фольгу реально сдирают, а не отламывают кусками.
+ * Сквозь сорванный участок сразу виден шоколад под ним.
+ *
+ * У каждого участка известен угол на поверхности (midAngle) — по нему
+ * игра (game.js) доворачивает яйцо так, чтобы очередной целый участок
+ * оказался лицом к игроку, прежде чем его сорвут.
  */
 export function createFoil(clicksNeeded, debris, topology) {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
-  const geometry = buildFullShellGeometry(topology, 1.05);
-  const { canvas, ctx, texture, patches } = createFoilTexture();
+  const scale = 1.05;
+  const geometry = buildFullShellGeometry(topology, scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = TEXTURE_W;
+  canvas.height = TEXTURE_H;
+  const ctx = canvas.getContext('2d');
+  const patches = buildFoilPatches(canvas, clicksNeeded);
+  paintFoilPattern(ctx, canvas, patches);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+
   const material = new THREE.MeshStandardMaterial({
     map: texture,
     transparent: true,
@@ -266,18 +172,17 @@ export function createFoil(clicksNeeded, debris, topology) {
   mesh.userData.layer = 'foil';
   group.add(mesh);
 
-  let clicksLeft = clicksNeeded;
+  let remainingCount = clicksNeeded;
 
-  /** Стирает фольгу в точке (u, v) текстуры и отправляет обрывок в полёт. */
-  function peelAt(uv, worldPoint) {
-    if (clicksLeft <= 0) return false;
-    const progress = 1 - clicksLeft / clicksNeeded;
-    const radius = canvas.width * (0.14 + progress * 0.09); // ближе к концу пятна крупнее
-    const tornColor = eraseAt(ctx, canvas, patches, uv.x, uv.y, radius);
+  /** Срывает конкретный участок целиком и отправляет обрывок в полёт. */
+  function peelPatch(patch) {
+    if (!patch || patch.torn) return false;
+    tearPatch(ctx, canvas, patch);
     texture.needsUpdate = true;
-    clicksLeft--;
+    remainingCount--;
 
-    if (worldPoint) spawnScrap(worldPoint.clone(), debris, tornColor);
+    const localPoint = surfacePoint(patch.midAngle, patch.t, scale);
+    spawnScrap(group.localToWorld(localPoint), debris, patch.color);
     return true;
   }
 
@@ -308,9 +213,13 @@ export function createFoil(clicksNeeded, debris, topology) {
     group,
     mesh,
     get remaining() {
-      return clicksLeft;
+      return remainingCount;
     },
-    peelAt,
+    /** Ещё целые участки — цели для доворота яйца (у каждого есть .midAngle). */
+    get targets() {
+      return patches.filter((p) => !p.torn);
+    },
+    peelPatch,
     finish,
     dispose,
   };

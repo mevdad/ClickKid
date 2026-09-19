@@ -21,14 +21,14 @@ const HINTS = {
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
  *
- * Фольга — цельная обёртка: клик по ней по-настоящему «стирает» фольгу
- * ровно в месте попадания (хаотичным округлым пятном, без единой прямой
- * грани), как будто её на самом деле сдирают, а не отламывают кусками.
- * Шоколад устроен иначе — он ломается на кусочки, и каждый клик
- * «откусывает» один: кусочек сжимается на месте и тает, никуда не летя
- * и не падая. Под непрозрачной скорлупой всё равно не видно, куда бить,
- * поэтому клик там срабатывает в любом месте экрана, а яйцо само
- * доворачивается, чтобы намеченный кусочек оказался на виду.
+ * И фольга, и шоколад устроены одинаково: клик в любом месте экрана
+ * срывает/откусывает намеченный целый участок, а яйцо само доворачивается
+ * так, чтобы следующий ещё целый участок оказался лицом к игроку — никогда
+ * не приходится смотреть на пустую сторону, гадая, куда двинуться дальше.
+ * Фольга рвётся целым цветным участком по контуру (хаотичным, но округлым
+ * пятном, без единой прямой грани) — как будто её реально сдирают.
+ * Шоколадный кусочек «откусывают»: он сжимается на месте и тает, никуда
+ * не летя и не падая.
  */
 export function createGame({ scene, camera, canvas, ui }) {
   const root = new THREE.Group();
@@ -36,8 +36,6 @@ export function createGame({ scene, camera, canvas, ui }) {
 
   const confetti = createConfetti(scene);
   const fireworks = createFireworks(scene);
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
 
   // Сюда летят декоративные обрывки фольги — в мировых координатах,
   // независимо от того, что яйцо в это время уже поворачивается.
@@ -62,7 +60,7 @@ export function createGame({ scene, camera, canvas, ui }) {
   let figureHolder = null;
   let lastFigureId = null;
   let chocolateTotal = 0;
-  let activeTarget = null; // кусочек шоколада, который отколется по клику (для фольги не нужен)
+  let activeTarget = null; // намеченный участок фольги/кусочек шоколада, который сработает по клику
 
   /**
    * Следующая игрушка — случайная, но не та же, что была только что.
@@ -106,6 +104,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
+    pickNearestFoilTarget();
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -167,7 +166,7 @@ export function createGame({ scene, camera, canvas, ui }) {
    * верхний ещё целый ряд (шоколад «открывается» сверху вниз, как
    * настоящий), а среди кусочков на этой же высоте — ближайший по углу
    * к текущему повороту, чтобы яйцо доворачивалось на минимальный угол,
-   * а не прыгало по кругу. Для фольги не нужна — там целятся кликом.
+   * а не прыгало по кругу.
    */
   function pickNewTarget(meshes) {
     if (!meshes.length) {
@@ -191,15 +190,28 @@ export function createGame({ scene, camera, canvas, ui }) {
     faceAngle(activeTarget.userData.midAngle);
   }
 
-  /** Пробует попасть по фольге ровно в месте клика; при явном промахе — целится в центр. */
-  function raycastFoil() {
-    raycaster.setFromCamera(pointer, camera);
-    let hit = raycaster.intersectObject(foil.mesh, false)[0];
-    if (!hit) {
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-      hit = raycaster.intersectObject(foil.mesh, false)[0];
+  /**
+   * Выбирает ближайший к текущему повороту ещё целый участок фольги —
+   * без привязки к высоте (в отличие от шоколада, фольгу можно рвать
+   * в любом порядке), лишь бы яйцо доворачивалось на минимальный угол.
+   */
+  function pickNearestFoilTarget() {
+    const targets = foil?.targets ?? [];
+    if (!targets.length) {
+      activeTarget = null;
+      return;
     }
-    return hit;
+    let best = targets[0];
+    let bestDelta = Infinity;
+    for (const patch of targets) {
+      const delta = Math.abs(shortestDelta(baseRotationY, -patch.midAngle));
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = patch;
+      }
+    }
+    activeTarget = best;
+    faceAngle(activeTarget.midAngle);
   }
 
   function advance() {
@@ -209,15 +221,12 @@ export function createGame({ scene, camera, canvas, ui }) {
       return;
     }
 
-    if (state === 'chocolate' && !activeTarget) return;
+    if ((state === 'foil' || state === 'chocolate') && !activeTarget) return;
 
     if (state === 'foil') {
-      const hit = raycastFoil();
-      if (!hit) return;
-
       pulse();
       audio.sfxFoil();
-      foil.peelAt(hit.uv, hit.point);
+      foil.peelPatch(activeTarget);
       updateProgress();
 
       if (foil.remaining === 0) {
@@ -227,6 +236,8 @@ export function createGame({ scene, camera, canvas, ui }) {
           pickNewTarget(chocolate.meshes);
           setBusy(false);
         });
+      } else {
+        pickNearestFoilTarget();
       }
       return;
     }
@@ -345,28 +356,19 @@ export function createGame({ scene, camera, canvas, ui }) {
     setBusy(false);
   }
 
-  /** Точка клика в нормализованных координатах экрана — нужна для прицела по фольге. */
-  function setPointerFromEvent(event) {
-    const rect = canvas.getBoundingClientRect();
-    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  }
-
-  function onPointerDown(event) {
+  function onPointerDown() {
     audio.unlockAudio();
-    setPointerFromEvent(event);
     advance();
   }
 
   canvas.addEventListener('pointerdown', onPointerDown);
 
-  // Пробел и Enter тоже открывают яйцо — целятся в центр экрана.
+  // Пробел и Enter тоже открывают яйцо — удобно на ноутбуке.
   window.addEventListener('keydown', (event) => {
     if (event.code !== 'Space' && event.code !== 'Enter') return;
     if (document.activeElement?.tagName === 'BUTTON') return;
     event.preventDefault();
     audio.unlockAudio();
-    pointer.set(0, 0);
     advance();
   });
 
