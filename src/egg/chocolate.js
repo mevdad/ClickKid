@@ -4,7 +4,8 @@ import { animate, rand } from '../utils.js';
 import { buildFullShellGeometry, surfacePoint } from './shellPieces.js';
 
 export const CHOCOLATE_PIECES = 14; // на столько округлых кусков делится скорлупа
-const TEXTURE_SIZE = 512;
+const TEXTURE_W = 1024;
+const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте) — та же плотность, что и у фольги
 
 /** Тёплый коричневый фон с лёгкими крапинками — база текстуры шоколада. */
 function paintChocolateBase(ctx, canvas) {
@@ -43,13 +44,148 @@ function paramDistance(theta1, t1, theta2, t2) {
  * прямые границы диаграммы Вороного в мягкие рваные линии естественного
  * скола. Добавка в тех же реальных единицах, что и paramDistance, поэтому
  * у полюсов, где кусок физически мал, она не «распухает» непропорционально.
+ * Частота специально невысокая (2–3 периода на весь круг) — у более
+ * дробного узора (много коротких волн) на границе иногда возникает второй
+ * локальный минимум далеко от своего очага, и получается лишний оторванный
+ * островок того же куска в стороне от него.
  */
 function bumpyDistance(theta, t, seed) {
   const base = paramDistance(theta, t, seed.theta, seed.t);
   const noise =
-    Math.sin(theta * 9 + t * 7 + seed.theta * 3.3) * 0.05 +
-    Math.sin(theta * 4.3 - t * 11 + seed.theta * 5.1 + 1.3) * 0.03;
+    Math.sin(theta * 2.4 + t * 2.1 + seed.theta * 3.3) * 0.035 +
+    Math.sin(theta * 1.6 - t * 2.8 + seed.theta * 5.1 + 1.3) * 0.02;
   return base + noise;
+}
+
+/**
+ * Убирает случайные оторванные островки: у диаграммы Вороного с добавкой
+ * шума изредка получается так, что кусок владеет не только своей основной
+ * областью, но и крошечным клочком где-то в стороне (там, где шум локально
+ * перевешивает расстояние до чужого очага). Каждый найденный клочок —
+ * связная область меньше самой крупной с тем же номером куска — стирается
+ * и заново отдаётся тому соседнему куску, который его окружает.
+ */
+function removeIslands(regionMap, width, height, count) {
+  const total = width * height;
+  const compId = new Int32Array(total).fill(-1);
+  const compLabel = [];
+  const compSize = [];
+  const stack = [];
+
+  for (let start = 0; start < total; start++) {
+    if (compId[start] !== -1) continue;
+    const label = regionMap[start];
+    const cid = compLabel.length;
+    compLabel.push(label);
+    let size = 0;
+    stack.length = 0;
+    stack.push(start);
+    compId[start] = cid;
+    while (stack.length) {
+      const idx = stack.pop();
+      size++;
+      const x = idx % width;
+      const y = (idx / width) | 0;
+      const left = y * width + ((x - 1 + width) % width);
+      const right = y * width + ((x + 1) % width);
+      const up = y > 0 ? idx - width : -1;
+      const down = y < height - 1 ? idx + width : -1;
+      for (const n of [left, right, up, down]) {
+        if (n >= 0 && compId[n] === -1 && regionMap[n] === label) {
+          compId[n] = cid;
+          stack.push(n);
+        }
+      }
+    }
+    compSize.push(size);
+  }
+
+  const bestComp = new Array(count).fill(-1);
+  const bestSize = new Array(count).fill(-1);
+  for (let c = 0; c < compLabel.length; c++) {
+    const label = compLabel[c];
+    if (compSize[c] > bestSize[label]) {
+      bestSize[label] = compSize[c];
+      bestComp[label] = c;
+    }
+  }
+
+  const queue = [];
+  const isOrphan = new Uint8Array(total);
+  for (let i = 0; i < total; i++) {
+    if (compId[i] !== bestComp[regionMap[i]]) isOrphan[i] = 1;
+    else queue.push(i);
+  }
+
+  // Многоисточниковый BFS от всех «настоящих» пикселей — растекается внутрь
+  // островков и отдаёт их тому соседнему куску, который дотянется первым.
+  let head = 0;
+  while (head < queue.length) {
+    const idx = queue[head++];
+    const label = regionMap[idx];
+    const x = idx % width;
+    const y = (idx / width) | 0;
+    const left = y * width + ((x - 1 + width) % width);
+    const right = y * width + ((x + 1) % width);
+    const up = y > 0 ? idx - width : -1;
+    const down = y < height - 1 ? idx + width : -1;
+    for (const n of [left, right, up, down]) {
+      if (n >= 0 && isOrphan[n]) {
+        regionMap[n] = label;
+        isOrphan[n] = 0;
+        queue.push(n);
+      }
+    }
+  }
+}
+
+/**
+ * Слегка размывает альфу в полосе строк [minY-radius, maxY+radius] по всей
+ * ширине (с учётом кругового шва по x) — прямо поверх уже стёртых
+ * пикселей. Без этого шага край укуса — это резкая ступенька ровно по
+ * границе текселя текстуры и на экране читается как «квадратики», а не
+ * плавная линия скола: тот же приём, что и сглаживание в шрифтовых
+ * текстурах — растянуть резкий перепад 0/255 на несколько текселей.
+ */
+function blurAlphaBand(data, width, height, minY, maxY, radius) {
+  const y0 = Math.max(0, minY - radius);
+  const y1 = Math.min(height - 1, maxY + radius);
+  const bandHeight = y1 - y0 + 1;
+  if (bandHeight <= 0) return;
+
+  const src = new Uint8ClampedArray(width * bandHeight);
+  for (let y = y0; y <= y1; y++) {
+    const row = (y - y0) * width;
+    for (let x = 0; x < width; x++) {
+      src[row + x] = data[(y * width + x) * 4 + 3];
+    }
+  }
+
+  const tmp = new Float32Array(width * bandHeight);
+  for (let y = 0; y < bandHeight; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let k = -radius; k <= radius; k++) {
+        sum += src[row + ((x + k + width) % width)];
+      }
+      tmp[row + x] = sum / (radius * 2 + 1);
+    }
+  }
+
+  for (let y = 0; y < bandHeight; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let count = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const sy = y + k;
+        if (sy < 0 || sy >= bandHeight) continue;
+        sum += tmp[sy * width + x];
+        count++;
+      }
+      data[((y + y0) * width + x) * 4 + 3] = sum / count;
+    }
+  }
 }
 
 /**
@@ -90,10 +226,12 @@ function buildBitePieces(canvas, count) {
     }
   }
 
+  removeIslands(regionMap, width, height, count);
+
   const pixelsByRegion = seeds.map(() => []);
   for (let i = 0; i < regionMap.length; i++) pixelsByRegion[regionMap[i]].push(i);
 
-  const sums = seeds.map(() => ({ sin: 0, cos: 0, t: 0, n: 0 }));
+  const sums = seeds.map(() => ({ sin: 0, cos: 0, t: 0, n: 0, minY: height, maxY: 0 }));
   for (let y = 0; y < height; y++) {
     const t = (y / height) * Math.PI;
     const row = y * width;
@@ -104,6 +242,8 @@ function buildBitePieces(canvas, count) {
       s.cos += Math.cos(theta);
       s.t += t;
       s.n += 1;
+      if (y < s.minY) s.minY = y;
+      if (y > s.maxY) s.maxY = y;
     }
   }
 
@@ -117,6 +257,8 @@ function buildBitePieces(canvas, count) {
       midAngle,
       t,
       pixels: pixelsByRegion[i],
+      minY: s.minY,
+      maxY: s.maxY,
       centroid: surfacePoint(midAngle, t, 1.0),
     };
   });
@@ -142,8 +284,8 @@ export function createChocolate(topology) {
   group.position.y = EGG.centerY;
 
   const canvas = document.createElement('canvas');
-  canvas.width = TEXTURE_SIZE;
-  canvas.height = TEXTURE_SIZE;
+  canvas.width = TEXTURE_W;
+  canvas.height = TEXTURE_H;
   const ctx = canvas.getContext('2d');
   paintChocolateBase(ctx, canvas);
   const { pieces } = buildBitePieces(canvas, CHOCOLATE_PIECES);
@@ -207,6 +349,7 @@ export function createChocolate(topology) {
     for (const idx of piece.pixels) {
       image.data[idx * 4 + 3] = 0;
     }
+    blurAlphaBand(image.data, canvas.width, canvas.height, piece.minY, piece.maxY, 2);
     ctx.putImageData(image, 0, 0);
     texture.needsUpdate = true;
     return true;
