@@ -4,6 +4,7 @@ import { createBee } from './bee.js';
 import { createBear } from './bear.js';
 import { createPiglet } from './piglet.js';
 import { createTiger } from './tiger.js';
+import { createBaby } from './baby.js';
 
 /**
  * Игрушки внутри яйца.
@@ -18,6 +19,7 @@ export const FIGURES = [
   { id: 'bear', name: 'Медвежонок', create: createBear },
   { id: 'piglet', name: 'Поросёнок', create: createPiglet },
   { id: 'tiger', name: 'Тигрёнок', create: createTiger },
+  { id: 'baby', name: 'Малыш', create: createBaby },
 ];
 
 const TARGET_HEIGHT = 1.15; // на такую высоту масштабируется любая модель
