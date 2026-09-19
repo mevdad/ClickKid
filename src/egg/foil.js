@@ -3,82 +3,124 @@ import { EGG } from './eggShape.js';
 import { buildFullShellGeometry, surfacePoint } from './shellPieces.js';
 import { animate, rand } from '../utils.js';
 
-const FOIL_COLORS = [0xff4d6d, 0xffd166, 0x4cc9f0, 0x80ed99, 0xf72585, 0xffa552, 0x9b5de5, 0x00bbf9];
+// Насыщенные, «кислотные» цвета — каждый участок сразу бросается в глаза,
+// никакого пастельного фона под ними не остаётся.
+const FOIL_COLORS = [0xff1744, 0xffd600, 0x00e5ff, 0x00e676, 0xff2d95, 0xff9100, 0xaa00ff, 0x2979ff];
 const TEXTURE_W = 1024;
 const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте)
 
 /**
- * Заранее считает контуры цветных участков узора — ровно clicksNeeded штук,
- * распределённых по кругу (с небольшим случайным разбросом, чтобы не
- * выглядело механически), по одному на каждый клик. У каждого участка
- * известен его угол (midAngle) — по нему яйцо потом доворачивается так,
- * чтобы очередной ещё целый участок оказался лицом к игроку.
+ * Органическое смещение координат перед поиском ближайшего очага —
+ * превращает прямые границы диаграммы Вороного в хаотичные, рваные линии,
+ * будто фольгу разрывали руками, а не резали по линейке.
  */
-function buildFoilPatches(canvas, count) {
-  const patches = [];
+function warp(x, y) {
+  const n =
+    Math.sin(x * 0.012 + y * 0.021) * 34 +
+    Math.sin(x * 0.007 - y * 0.016 + 3.1) * 26 +
+    Math.sin(x * 0.023 + y * 0.005 - 1.7) * 14;
+  const m =
+    Math.cos(y * 0.014 - x * 0.018) * 34 +
+    Math.cos(y * 0.009 + x * 0.012 + 2.4) * 22;
+  return [x + n, y + m];
+}
+
+/**
+ * Заранее делит ВСЮ поверхность текстуры на ровно clicksNeeded ярких
+ * участков — настоящая диаграмма Вороного, без единого не закрашенного
+ * зазора, только с «рваными» органическими границами вместо прямых линий.
+ * Каждый пиксель текстуры принадлежит ровно одному участку — это же
+ * распределение используется и при отрывании, поэтому фольга снимается
+ * ровно по границе своего участка, ни пикселем меньше и не больше.
+ */
+function buildFoilRegions(count) {
+  const seeds = [];
   for (let i = 0; i < count; i++) {
-    const color = FOIL_COLORS[i % FOIL_COLORS.length];
     const baseTheta = (i / count) * Math.PI * 2;
-    const theta = ((baseTheta + rand(-0.3, 0.3)) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
-    const cx = (theta / (Math.PI * 2)) * canvas.width;
-    // Среднее двух случайных чисел сгущает участки к экватору — у самых
-    // полюсов текстура сильно сжимается по ширине, и круглое пятно там
-    // растягивается в вертикальную полосу.
-    const cy = ((Math.random() + Math.random()) / 2) * canvas.height;
-    const r = rand(115, 175); // участков немного (по числу кликов) — каждый крупный
-    const path = new Path2D();
-    // Участок из нескольких смещённых кругов — неровный, но округлый контур.
-    for (let k = 0; k < 4; k++) {
-      path.moveTo(cx, cy);
-      path.arc(cx + rand(-r * 0.4, r * 0.4), cy + rand(-r * 0.4, r * 0.4), r * rand(0.6, 1), 0, Math.PI * 2);
+    const theta = baseTheta + rand(-0.35, 0.35);
+    const cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
+    const cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
+    seeds.push({ cx, cy, color: FOIL_COLORS[i % FOIL_COLORS.length] });
+  }
+
+  const regionMap = new Uint8Array(TEXTURE_W * TEXTURE_H);
+  for (let y = 0; y < TEXTURE_H; y++) {
+    const row = y * TEXTURE_W;
+    for (let x = 0; x < TEXTURE_W; x++) {
+      const [wx, wy] = warp(x, y);
+      let best = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < seeds.length; i++) {
+        const seed = seeds[i];
+        let dx = Math.abs(wx - seed.cx);
+        if (dx > TEXTURE_W / 2) dx = TEXTURE_W - dx; // круговой шов по горизонтали
+        const dy = wy - seed.cy;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      }
+      regionMap[row + x] = best;
     }
-    patches.push({
-      cx,
-      cy,
-      r,
-      path,
-      color,
+  }
+
+  // Средний угол и высота каждого участка — по накопленным координатам его
+  // пикселей (угол усредняется через синус/косинус, чтобы шов 0/2π не портил среднее).
+  const sums = seeds.map(() => ({ sin: 0, cos: 0, t: 0, n: 0 }));
+  for (let y = 0; y < TEXTURE_H; y++) {
+    const t = (y / TEXTURE_H) * Math.PI;
+    const row = y * TEXTURE_W;
+    for (let x = 0; x < TEXTURE_W; x++) {
+      const theta = (x / TEXTURE_W) * Math.PI * 2;
+      const s = sums[regionMap[row + x]];
+      s.sin += Math.sin(theta);
+      s.cos += Math.cos(theta);
+      s.t += t;
+      s.n += 1;
+    }
+  }
+
+  const patches = seeds.map((seed, i) => {
+    const s = sums[i];
+    const midAngle = (Math.atan2(s.sin, s.cos) + Math.PI * 2) % (Math.PI * 2);
+    return {
+      index: i,
+      color: seed.color,
       torn: false,
-      midAngle: theta,
-      t: (cy / canvas.height) * Math.PI,
-    });
+      midAngle,
+      t: s.n > 0 ? s.t / s.n : Math.PI / 2,
+    };
+  });
+
+  return { regionMap, patches };
+}
+
+/** Заливает текстуру целиком — каждый пиксель цветом своего участка, фона не остаётся. */
+function paintFoilPattern(ctx, regionMap, patches) {
+  const image = ctx.createImageData(TEXTURE_W, TEXTURE_H);
+  const bytes = patches.map((p) => [(p.color >> 16) & 0xff, (p.color >> 8) & 0xff, p.color & 0xff]);
+  for (let i = 0; i < regionMap.length; i++) {
+    const [r, g, b] = bytes[regionMap[i]];
+    const o = i * 4;
+    image.data[o] = r;
+    image.data[o + 1] = g;
+    image.data[o + 2] = b;
+    image.data[o + 3] = 255;
   }
-  return patches;
+  ctx.putImageData(image, 0, 0);
 }
 
-/** Красочный узор фольги: светлый металлический фон и цветные участки по контурам. */
-function paintFoilPattern(ctx, canvas, patches) {
-  const base = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  base.addColorStop(0, '#fff4f9');
-  base.addColorStop(1, '#ffe3f1');
-  ctx.fillStyle = base;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  for (const patch of patches) {
-    ctx.fillStyle = `#${patch.color.toString(16).padStart(6, '0')}`;
-    ctx.fill(patch.path);
-  }
-}
-
-/** Смещения по X для отрисовки у самого шва (theta = 0 / 2π), чтобы участок не обрывался. */
-function seamOffsets(x, width, r) {
-  const offsets = [0];
-  if (x - r < 0) offsets.push(width);
-  if (x + r > width) offsets.push(-width);
-  return offsets;
-}
-
-/** Стирает альфу текстуры ровно по контуру участка — целиком, одним движением. */
-function tearPatch(ctx, canvas, patch) {
+/** Стирает альфу ровно там, где карта участков указывает на этот же участок. */
+function tearPatch(ctx, regionMap, patch) {
   patch.torn = true;
-  ctx.globalCompositeOperation = 'destination-out';
-  for (const dx of seamOffsets(patch.cx, canvas.width, patch.r)) {
-    ctx.save();
-    ctx.translate(dx, 0);
-    ctx.fill(patch.path);
-    ctx.restore();
+  const image = ctx.getImageData(0, 0, TEXTURE_W, TEXTURE_H);
+  for (let i = 0; i < regionMap.length; i++) {
+    if (regionMap[i] === patch.index) {
+      image.data[i * 4 + 3] = 0;
+    }
   }
-  ctx.globalCompositeOperation = 'source-over';
+  ctx.putImageData(image, 0, 0);
 }
 
 /** Маленький блестящий обрывок фольги, улетающий с места отрыва — для отдачи. */
@@ -129,12 +171,13 @@ function spawnScrap(worldPoint, debris, color) {
 }
 
 /**
- * Слой фольги: одна цельная гладкая оболочка (без единого треугольного
- * шва в силуэте — форма ровно повторяет поверхность яйца), обёрнутая
- * в цветной узор из clicksNeeded участков. Каждый клик срывает ровно один
- * ещё целый участок целиком по его контуру — хаотичным, но округлым
- * пятном, как будто фольгу реально сдирают, а не отламывают кусками.
- * Сквозь сорванный участок сразу виден шоколад под ним.
+ * Слой фольги: одна цельная гладкая оболочка (без единого треугольного шва
+ * в силуэте — форма ровно повторяет поверхность яйца), заранее целиком
+ * поделённая на clicksNeeded ярких цветных участков — настоящей диаграммой
+ * Вороного без единого не закрашенного зазора, с рваными органическими
+ * границами. Каждый клик срывает ровно один ещё целый участок целиком, точно
+ * по его границе — хаотичным, но округлым пятном, как будто фольгу реально
+ * сдирают. Сквозь сорванный участок сразу виден шоколад под ним.
  *
  * У каждого участка известен угол на поверхности (midAngle) — по нему
  * игра (game.js) доворачивает яйцо так, чтобы очередной целый участок
@@ -151,18 +194,21 @@ export function createFoil(clicksNeeded, debris, topology) {
   canvas.width = TEXTURE_W;
   canvas.height = TEXTURE_H;
   const ctx = canvas.getContext('2d');
-  const patches = buildFoilPatches(canvas, clicksNeeded);
-  paintFoilPattern(ctx, canvas, patches);
+  const { regionMap, patches } = buildFoilRegions(clicksNeeded);
+  paintFoilPattern(ctx, regionMap, patches);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
 
   const material = new THREE.MeshStandardMaterial({
     map: texture,
+    emissiveMap: texture,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.55,
     transparent: true,
-    metalness: 0.55,
-    roughness: 0.32,
-    envMapIntensity: 1.0,
+    metalness: 0.22,
+    roughness: 0.45,
+    envMapIntensity: 0.55,
     side: THREE.DoubleSide,
   });
 
@@ -177,7 +223,7 @@ export function createFoil(clicksNeeded, debris, topology) {
   /** Срывает конкретный участок целиком и отправляет обрывок в полёт. */
   function peelPatch(patch) {
     if (!patch || patch.torn) return false;
-    tearPatch(ctx, canvas, patch);
+    tearPatch(ctx, regionMap, patch);
     texture.needsUpdate = true;
     remainingCount--;
 
