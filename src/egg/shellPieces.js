@@ -1,20 +1,20 @@
 import * as THREE from 'three';
 import { Delaunay } from 'd3-delaunay';
 import { EGG } from './eggShape.js';
-import { animate, tween, easeOutCubic, easeInCubic, rand } from '../utils.js';
+import { animate, tween, easeOutCubic, rand } from '../utils.js';
 
 /**
- * Общая механика для слоёв, которые «отламываются» кусками — фольга и
- * шоколад устроены одинаково: поверхность яйца триангулируется случайными
- * точками (Делоне), треугольники группируются в кусочки — края получаются
- * рваными случайными многоугольниками из треугольников, а не ровными
- * квадратами сетки.
+ * Общая геометрия поверхности яйца для фольги и шоколада: оба слоя строят
+ * один и тот же цельный меш (см. buildFullShellGeometry) по общей
+ * триангуляции Делоне, каждый лишь со своим масштабом радиуса — а деление
+ * на «куски», по которым идёт клик, каждый слой рисует сам поверх своей
+ * текстуры (см. foil.js и chocolate.js), стирая в ней альфу.
  *
  * Поверхность параметризована двумя числами (theta, t): theta — угол
  * вокруг оси Y (0..2π), t — параметр профиля яйца (0 — макушка, π — низ,
  * та же переменная, что и в eggProfile). Позиция и нормаль в любой точке
  * (theta, t) считаются напрямую по формуле профиля, поэтому нормали
- * гарантированно гладкие и совпадают у соседних кусочков на общей границе.
+ * гарантированно гладкие по всей поверхности.
  */
 
 /** Радиус и высота профиля яйца в произвольной точке t. */
@@ -101,87 +101,6 @@ function triangulateShell(pointCount) {
   return kept; // массив треугольников, каждый — [[theta,t], [theta,t], [theta,t]]
 }
 
-/** Расстояние между двумя точками (theta, t) в реальных единицах, с учётом обёртки по кругу. */
-function paramDistance(a, b) {
-  let dTheta = Math.abs(a[0] - b[0]) % (Math.PI * 2);
-  if (dTheta > Math.PI) dTheta = Math.PI * 2 - dTheta;
-  const dt = a[1] - b[1];
-  return Math.hypot(dTheta * EGG.radius, dt * EGG.halfHeight);
-}
-
-/**
- * Группирует треугольники в pieceCount кусочков по принципу «ближайший
- * случайный очаг» (обычная диаграмма Вороного по центрам треугольников).
- * В отличие от случайного роста по соседям (BFS), где порядок обработки
- * решает форму и легко получаются тонкие вытянутые «щупальца», здесь
- * каждый треугольник просто достаётся тому очагу, что реально ближе —
- * кусочки выходят компактными и округлыми, как отломанные руками.
- */
-function groupTriangles(triangles, pieceCount) {
-  const total = triangles.length;
-  const centroids = triangles.map(([a, b, c]) => [
-    (a[0] + b[0] + c[0]) / 3,
-    (a[1] + b[1] + c[1]) / 3,
-  ]);
-
-  const order = [...Array(total).keys()];
-  for (let k = order.length - 1; k > 0; k--) {
-    const r = Math.floor(Math.random() * (k + 1));
-    [order[k], order[r]] = [order[r], order[k]];
-  }
-  const seeds = order.slice(0, Math.min(pieceCount, total)).map((i) => centroids[i]);
-
-  const groupOf = new Int32Array(total);
-  for (let i = 0; i < total; i++) {
-    let best = 0;
-    let bestDist = Infinity;
-    for (let s = 0; s < seeds.length; s++) {
-      const dist = paramDistance(centroids[i], seeds[s]);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = s;
-      }
-    }
-    groupOf[i] = best;
-  }
-  return groupOf;
-}
-
-/** Собирает геометрию одного кусочка из его треугольников. */
-function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
-  const positions = [];
-  const normals = [];
-  const uvs = [];
-  let sumX = 0, sumY = 0, sumZ = 0, count = 0;
-  let sumSin = 0, sumCos = 0;
-
-  triangles.forEach((tri, i) => {
-    if (groupOf[i] !== pieceIndex) return;
-    for (const [theta, t] of tri) {
-      const p = surfacePoint(theta, t, scale);
-      const n = surfaceNormal(theta, t, scale);
-      positions.push(p.x, p.y, p.z);
-      normals.push(n.x, n.y, n.z);
-      uvs.push(theta / (Math.PI * 2), 1 - t / Math.PI);
-      sumX += p.x; sumY += p.y; sumZ += p.z; count++;
-      sumSin += Math.sin(theta); sumCos += Math.cos(theta);
-    }
-  });
-
-  if (!count) return null;
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-
-  return {
-    geometry,
-    centroid: new THREE.Vector3(sumX / count, sumY / count, sumZ / count),
-    midAngle: Math.atan2(sumSin, sumCos),
-  };
-}
-
 /**
  * Считает случайную триангуляцию поверхности яйца один раз — общую для
  * фольги и шоколада. Это важно: если бы каждый слой триангулировал
@@ -195,21 +114,6 @@ function buildPieceGeometry(triangles, groupOf, pieceIndex, scale) {
  */
 export function createShellTopology(pointCount = 900) {
   return triangulateShell(pointCount);
-}
-
-/**
- * Строит pieceCount кусочков-многоугольников (из треугольников общей
- * топологии) для одного слоя со своим масштабом.
- */
-export function buildShellPieces(triangles, { pieceCount, scale = 1 }) {
-  const groupOf = groupTriangles(triangles, pieceCount);
-
-  const pieces = [];
-  for (let p = 0; p < pieceCount; p++) {
-    const built = buildPieceGeometry(triangles, groupOf, p, scale);
-    if (built) pieces.push(built);
-  }
-  return pieces;
 }
 
 /**
@@ -237,48 +141,6 @@ export function buildFullShellGeometry(triangles, scale = 1) {
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   return geometry;
-}
-
-/**
- * «Откусывает» кусочек на месте: он не летит и не падает, а сжимается
- * к своему центру и тает — как будто его действительно съели. Сначала
- * короткий «укус»-рывок (кусочек чуть распухает), потом быстрое сжатие.
- * Масштабируется вокруг СВОЕГО центра (через временную группу-обёртку),
- * а не центра яйца — иначе выглядело бы, будто кусок улетает внутрь.
- */
-export function biteAway(mesh, { onDone } = {}) {
-  const parent = mesh.parent;
-  const centroid = mesh.userData.centroid.clone();
-
-  const wrapper = new THREE.Group();
-  wrapper.position.copy(centroid);
-  parent.add(wrapper);
-  mesh.position.sub(centroid);
-  wrapper.add(mesh);
-
-  mesh.material.transparent = true;
-  mesh.material.needsUpdate = true;
-
-  const bulge = 0.15; // доля времени на «укус» перед сжатием
-  let life = 0;
-  const total = 0.32;
-  animate((dt) => {
-    life += dt;
-    const t = Math.min(1, life / total);
-    const scale = t < bulge
-      ? 1 + 0.12 * (t / bulge)
-      : 1.12 * (1 - easeInCubic((t - bulge) / (1 - bulge)));
-    wrapper.scale.setScalar(Math.max(0.0001, scale));
-    mesh.material.opacity = Math.max(0, 1 - t);
-    if (t >= 1) {
-      parent.remove(wrapper);
-      mesh.geometry.dispose();
-      mesh.material.dispose();
-      onDone?.();
-      return false;
-    }
-    return true;
-  });
 }
 
 /**
