@@ -65,31 +65,58 @@ function buildFoilRegions(count) {
     }
   }
 
-  // Средний угол и высота каждого участка — по накопленным координатам его
-  // пикселей (угол усредняется через синус/косинус, чтобы шов 0/2π не портил среднее).
+  // Средний угол и высота каждого участка (по накопленным координатам его
+  // пикселей, угол усредняется через синус/косинус, чтобы шов 0/2π не портил
+  // среднее), полный список его пикселей, их bbox и кромка, граничащая с
+  // соседними участками, — нужны дальше для плавной анимации срывания.
   const sums = seeds.map(() => ({ sin: 0, cos: 0, t: 0, n: 0 }));
+  const pixelLists = seeds.map(() => []);
+  const edgeLists = seeds.map(() => []);
+  const boxes = seeds.map(() => ({ minX: TEXTURE_W, maxX: 0, minY: TEXTURE_H, maxY: 0 }));
   for (let y = 0; y < TEXTURE_H; y++) {
     const t = (y / TEXTURE_H) * Math.PI;
     const row = y * TEXTURE_W;
     for (let x = 0; x < TEXTURE_W; x++) {
+      const idx = row + x;
+      const patchIndex = regionMap[idx];
       const theta = (x / TEXTURE_W) * Math.PI * 2;
-      const s = sums[regionMap[row + x]];
+      const s = sums[patchIndex];
       s.sin += Math.sin(theta);
       s.cos += Math.cos(theta);
       s.t += t;
       s.n += 1;
+
+      pixelLists[patchIndex].push(idx);
+      const box = boxes[patchIndex];
+      if (x < box.minX) box.minX = x;
+      if (x > box.maxX) box.maxX = x;
+      if (y < box.minY) box.minY = y;
+      if (y > box.maxY) box.maxY = y;
+
+      const right = regionMap[row + ((x + 1) % TEXTURE_W)];
+      const down = y + 1 < TEXTURE_H ? regionMap[idx + TEXTURE_W] : patchIndex;
+      if (right !== patchIndex || down !== patchIndex) edgeLists[patchIndex].push(idx);
     }
   }
 
   const patches = seeds.map((seed, i) => {
     const s = sums[i];
     const midAngle = (Math.atan2(s.sin, s.cos) + Math.PI * 2) % (Math.PI * 2);
+    const box = boxes[i];
+    // Участок у шва 0/2π «разрезается» пополам в координатах текстуры —
+    // тогда берём срез на всю ширину, иначе настоящий bbox участка.
+    const wraps = box.maxX - box.minX > TEXTURE_W * 0.6;
     return {
       index: i,
       color: seed.color,
       torn: false,
       midAngle,
       t: s.n > 0 ? s.t / s.n : Math.PI / 2,
+      pixels: Int32Array.from(pixelLists[i]),
+      edge: Int32Array.from(edgeLists[i].length ? edgeLists[i] : pixelLists[i]),
+      bbox: wraps
+        ? { x: 0, y: box.minY, w: TEXTURE_W, h: box.maxY - box.minY + 1 }
+        : { x: box.minX, y: box.minY, w: box.maxX - box.minX + 1, h: box.maxY - box.minY + 1 },
     };
   });
 
@@ -111,16 +138,40 @@ function paintFoilPattern(ctx, regionMap, patches) {
   ctx.putImageData(image, 0, 0);
 }
 
-/** Стирает альфу ровно там, где карта участков указывает на этот же участок. */
-function tearPatch(ctx, regionMap, patch) {
-  patch.torn = true;
-  const image = ctx.getImageData(0, 0, TEXTURE_W, TEXTURE_H);
-  for (let i = 0; i < regionMap.length; i++) {
-    if (regionMap[i] === patch.index) {
-      image.data[i * 4 + 3] = 0;
-    }
+/**
+ * Готовит поле расстояний для анимации срывания участка: старт — случайная
+ * точка на его кромке (там, где реально цепляют ноготь), а расстояние до
+ * каждого пикселя участка считается в тех же «рваных» warp-координатах,
+ * что и сами границы Вороного, — поэтому кромка отрыва бежит не идеальным
+ * кругом, а неровной, слегка хаотичной волной, как при настоящем сдирании.
+ * Считается один раз на участок и кэшируется в самом объекте участка.
+ */
+function preparePeel(patch) {
+  if (patch.peel) return patch.peel;
+  const pixels = patch.pixels;
+  const n = pixels.length;
+  const edge = patch.edge.length ? patch.edge : pixels;
+  const originIdx = edge[Math.floor(rand(0, edge.length))];
+  const ox = originIdx % TEXTURE_W;
+  const oy = (originIdx / TEXTURE_W) | 0;
+  const [owx, owy] = warp(ox, oy);
+
+  const dist = new Float32Array(n);
+  let maxDist = 0;
+  for (let i = 0; i < n; i++) {
+    const idx = pixels[i];
+    const x = idx % TEXTURE_W;
+    const y = (idx / TEXTURE_W) | 0;
+    const [wx, wy] = warp(x, y);
+    let dx = Math.abs(wx - owx);
+    if (dx > TEXTURE_W / 2) dx = TEXTURE_W - dx;
+    const dy = wy - owy;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    dist[i] = d;
+    if (d > maxDist) maxDist = d;
   }
-  ctx.putImageData(image, 0, 0);
+  patch.peel = { dist, maxDist: Math.max(maxDist, 1) };
+  return patch.peel;
 }
 
 /** Маленький блестящий обрывок фольги, улетающий с места отрыва — для отдачи. */
@@ -193,7 +244,7 @@ export function createFoil(clicksNeeded, debris, topology) {
   const canvas = document.createElement('canvas');
   canvas.width = TEXTURE_W;
   canvas.height = TEXTURE_H;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const { regionMap, patches } = buildFoilRegions(clicksNeeded);
   paintFoilPattern(ctx, regionMap, patches);
 
@@ -219,16 +270,54 @@ export function createFoil(clicksNeeded, debris, topology) {
   group.add(mesh);
 
   let remainingCount = clicksNeeded;
+  const TEAR_DURATION = 0.4;
 
-  /** Срывает конкретный участок целиком и отправляет обрывок в полёт. */
+  /**
+   * Плавно срывает участок целиком: неровная кромка отрыва пробегает от
+   * точки на краю участка до его дальней границы, с мягкой (не бинарной)
+   * растушёванной каёмкой — визуально фольга реально отдирается, а не
+   * пропадает одним кадром. Обрывок улетает, когда кромка добегает до конца.
+   */
   function peelPatch(patch) {
     if (!patch || patch.torn) return false;
-    tearPatch(ctx, regionMap, patch);
-    texture.needsUpdate = true;
+    patch.torn = true;
     remainingCount--;
 
-    const localPoint = surfacePoint(patch.midAngle, patch.t, scale);
-    spawnScrap(group.localToWorld(localPoint), debris, patch.color);
+    const { dist, maxDist } = preparePeel(patch);
+    const pixels = patch.pixels;
+    const feather = Math.min(maxDist, Math.max(20, maxDist * 0.16));
+    const { x: bx, y: by, w: bw, h: bh } = patch.bbox;
+
+    let progress = 0;
+    animate((dt) => {
+      progress = Math.min(1, progress + dt / TEAR_DURATION);
+      const eased = progress * progress * (3 - 2 * progress); // smoothstep
+      const front = eased * (maxDist + feather);
+
+      const image = ctx.getImageData(bx, by, bw, bh);
+      for (let i = 0; i < pixels.length; i++) {
+        const idx = pixels[i];
+        const px = (idx % TEXTURE_W) - bx;
+        const py = ((idx / TEXTURE_W) | 0) - by;
+        const localIdx = (py * bw + px) * 4 + 3;
+        const d = dist[i];
+        let a;
+        if (d <= front - feather) a = 0;
+        else if (d >= front) a = 255;
+        else a = ((d - (front - feather)) / feather) * 255;
+        image.data[localIdx] = a;
+      }
+      ctx.putImageData(image, bx, by);
+      texture.needsUpdate = true;
+
+      if (progress >= 1) {
+        const localPoint = surfacePoint(patch.midAngle, patch.t, scale);
+        spawnScrap(group.localToWorld(localPoint), debris, patch.color);
+        return false;
+      }
+      return true;
+    });
+
     return true;
   }
 
