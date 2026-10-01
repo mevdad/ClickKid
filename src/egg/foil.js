@@ -5,7 +5,17 @@ import { animate, rand } from '../utils.js';
 
 // Насыщенные, «кислотные» цвета — каждый участок сразу бросается в глаза,
 // никакого пастельного фона под ними не остаётся.
-const FOIL_COLORS = [0xff1744, 0xffd600, 0x00e5ff, 0x00e676, 0xff2d95, 0xff9100, 0xaa00ff, 0x2979ff];
+// name — как цвет называет голос диктора («Выбери зелёный!»).
+const FOIL_COLORS = [
+  { hex: 0xff1744, name: 'красный' },
+  { hex: 0xffd600, name: 'жёлтый' },
+  { hex: 0x00e5ff, name: 'голубой' },
+  { hex: 0x00e676, name: 'зелёный' },
+  { hex: 0xff2d95, name: 'розовый' },
+  { hex: 0xff9100, name: 'оранжевый' },
+  { hex: 0xaa00ff, name: 'фиолетовый' },
+  { hex: 0x2979ff, name: 'синий' },
+];
 const TEXTURE_W = 1024;
 const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте)
 
@@ -117,13 +127,16 @@ function removeIslands(regionMap, count) {
  * ровно по границе своего участка, ни пикселем меньше и не больше.
  */
 function buildFoilRegions(count) {
+  // Цвета раскладываются по яйцу в случайном порядке — каждая игра новая,
+  // и малыш не может просто запомнить, где какой цвет.
+  const palette = [...FOIL_COLORS].sort(() => Math.random() - 0.5);
   const seeds = [];
   for (let i = 0; i < count; i++) {
     const baseTheta = (i / count) * Math.PI * 2;
     const theta = baseTheta + rand(-0.35, 0.35);
     const cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
     const cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
-    seeds.push({ cx, cy, color: FOIL_COLORS[i % FOIL_COLORS.length] });
+    seeds.push({ cx, cy, color: palette[i % palette.length] });
   }
 
   const regionMap = new Uint8Array(TEXTURE_W * TEXTURE_H);
@@ -193,7 +206,8 @@ function buildFoilRegions(count) {
     const wraps = box.maxX - box.minX > TEXTURE_W * 0.6;
     return {
       index: i,
-      color: seed.color,
+      color: seed.color.hex,
+      colorName: seed.color.name,
       torn: false,
       midAngle,
       t: s.n > 0 ? s.t / s.n : Math.PI / 2,
@@ -438,6 +452,16 @@ export function createFoil(clicksNeeded, debris, topology) {
     /** Ещё целые участки — цели для доворота яйца (у каждого есть .midAngle). */
     get targets() {
       return patches.filter((p) => !p.torn);
+    },
+    /**
+     * Участок фольги под точкой текстуры (u, v) — или null, если он уже
+     * сорван. Нужен, чтобы понять, на какой именно цвет нажал игрок.
+     */
+    patchAtUV(u, v) {
+      const x = Math.min(TEXTURE_W - 1, Math.max(0, Math.floor(u * TEXTURE_W)));
+      const y = Math.min(TEXTURE_H - 1, Math.max(0, Math.floor((1 - v) * TEXTURE_H)));
+      const patch = patches[regionMap[y * TEXTURE_W + x]];
+      return patch.torn ? null : patch;
     },
     peelPatch,
     finish,

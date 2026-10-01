@@ -111,6 +111,26 @@ body {
   transform: scale(0.92);
 }
 
+/* «Повторить задание» — слева, зеркально кнопке звука. */
+#repeat {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: 14px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  font-size: 1.5rem;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 12px rgba(120, 60, 120, 0.25);
+  cursor: pointer;
+  line-height: 1;
+}
+
+#repeat:active {
+  transform: scale(0.92);
+}
+
 .overlay {
   position: absolute;
   inset: 0;

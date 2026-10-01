@@ -117,6 +117,17 @@ export function sfxTap() {
   playTone({ freq: 880, slideTo: 1320, duration: 0.09, type: 'sine', gain: 0.08 });
 }
 
+/** Верный цвет: весёлое «дзынь» вверх. */
+export function sfxCorrect() {
+  playTone({ freq: 659.25, duration: 0.14, type: 'triangle', gain: 0.2 });
+  playTone({ freq: 987.77, duration: 0.24, type: 'triangle', gain: 0.2, delay: 0.1 });
+}
+
+/** Не тот цвет: мягкое «бом», без резкости — малыша не пугаем. */
+export function sfxWrong() {
+  playTone({ freq: 260, slideTo: 170, duration: 0.25, type: 'triangle', gain: 0.18 });
+}
+
 /** Хлопок салюта — один залп фейерверка. */
 export function sfxBoom() {
   playTone({ freq: 160, slideTo: 45, duration: 0.32, type: 'sine', gain: 0.26 });
