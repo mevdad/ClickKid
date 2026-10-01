@@ -382,6 +382,8 @@ export function createGame({ scene, camera, canvas, ui }) {
     fireworks.launch(skyOrigin, { count: 5, onBurst: () => audio.sfxBoom() });
     ui.setHint('Ура! Сюрприз відкрито!');
     speech.speak(`Ура! Це ${figure.name}!`);
+    // Зверёк «отзывается» сразу после того, как диктор назвал его.
+    setTimeout(() => { if (state === 'reveal') audio.sfxAnimal(lastFigureId); }, 1800);
     ui.clearProgress();
     ui.showReveal(figure.name);
   }
@@ -433,7 +435,11 @@ export function createGame({ scene, camera, canvas, ui }) {
   function onPointerDown(event) {
     audio.unlockAudio();
     if (state === 'foil') tapFoil(event);
-    else advance();
+    else if (state === 'reveal') {
+      // Тык по игрушке — она снова подаёт голос.
+      pulse(0.03);
+      audio.sfxAnimal(lastFigureId);
+    } else advance();
   }
 
   canvas.addEventListener('pointerdown', onPointerDown);

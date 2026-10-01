@@ -138,3 +138,92 @@ export function sfxBoom() {
     playTone({ freq, slideTo: freq * 0.3, duration: 0.15, type: 'triangle', gain: 0.06, delay: 0.08 + i * 0.05 });
   }
 }
+
+/**
+ * «Голос» из генератора: пилообразная волна с вибрато/тремоло и фильтром —
+ * из таких кирпичиков собираются звуки зверят.
+ */
+function playVoice({
+  freq = 200, slideTo = null, duration = 0.4, delay = 0, gain = 0.25, type = 'sawtooth',
+  filter = 1200, tremolo = 0, tremoloDepth = 0.6, vibrato = 0, vibratoDepth = 0,
+}) {
+  if (!ensure() || muted) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, t0 + duration);
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = filter;
+
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, t0);
+  env.gain.exponentialRampToValueAtTime(gain, t0 + Math.min(0.06, duration * 0.3));
+  env.gain.setValueAtTime(gain, t0 + duration * 0.7);
+  env.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+  const stops = [osc];
+  if (tremolo) {
+    // Тремоло: громкость «дрожит» — получается рычание или жужжание.
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = tremolo;
+    const depth = ctx.createGain();
+    depth.gain.value = tremoloDepth * gain;
+    lfo.connect(depth).connect(env.gain);
+    stops.push(lfo);
+  }
+  if (vibrato) {
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = vibrato;
+    const depth = ctx.createGain();
+    depth.gain.value = vibratoDepth;
+    lfo.connect(depth).connect(osc.frequency);
+    stops.push(lfo);
+  }
+  osc.connect(lp).connect(env).connect(master);
+  for (const node of stops) {
+    node.start(t0);
+    node.stop(t0 + duration + 0.05);
+  }
+}
+
+const ANIMAL_SOUNDS = {
+  // Бджілка: «ззззз» — высокое жужжание с быстрым дрожанием.
+  bee() {
+    playVoice({ freq: 210, slideTo: 250, duration: 0.5, gain: 0.16, filter: 1800, tremolo: 55, vibrato: 7, vibratoDepth: 14 });
+    playVoice({ freq: 250, slideTo: 200, duration: 0.5, delay: 0.55, gain: 0.16, filter: 1800, tremolo: 55, vibrato: 7, vibratoDepth: 14 });
+  },
+  // Ведмежа: низкое добродушное «р-р-р».
+  bear() {
+    playVoice({ freq: 95, slideTo: 70, duration: 0.9, gain: 0.3, filter: 520, tremolo: 24, tremoloDepth: 0.8 });
+    playNoise({ duration: 0.8, type: 'bandpass', freq: 300, q: 0.8, gain: 0.1 });
+  },
+  // Поросятко: «хрю-хрю» — два коротких носовых хрюка.
+  piglet() {
+    [0, 0.28].forEach((delay) => {
+      playVoice({ freq: 260, slideTo: 150, duration: 0.16, delay, gain: 0.26, filter: 1000, tremolo: 40, tremoloDepth: 0.5 });
+      playNoise({ duration: 0.12, type: 'bandpass', freq: 1100, q: 2, gain: 0.12 });
+    });
+  },
+  // Тигреня: короткий звонкий рык, нарастающий и затихающий.
+  tiger() {
+    playVoice({ freq: 130, slideTo: 85, duration: 1.0, gain: 0.32, filter: 900, tremolo: 22, tremoloDepth: 0.7 });
+    playNoise({ duration: 0.9, type: 'bandpass', freq: 700, q: 0.7, gain: 0.14 });
+  },
+  // Малюк: весёлое «хі-хі-хі» — быстрые взлетающие звонкие нотки.
+  baby() {
+    [0, 0.14, 0.28, 0.42].forEach((delay, i) => {
+      playVoice({
+        freq: 640 + i * 40, slideTo: 880 + i * 40, duration: 0.11, delay, gain: 0.16,
+        type: 'triangle', filter: 4000, vibrato: 14, vibratoDepth: 12,
+      });
+    });
+  },
+};
+
+/** Звук игрушки по её id (bee, bear, piglet, tiger, baby). */
+export function sfxAnimal(id) {
+  ANIMAL_SOUNDS[id]?.();
+}
