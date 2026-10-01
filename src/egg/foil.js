@@ -26,6 +26,89 @@ function warp(x, y) {
 }
 
 /**
+ * Каждый участок должен быть ОДНОЙ связной областью. Из-за «рваного»
+ * смещения координат граница диаграммы Вороного иногда оставляет участку
+ * не только основное тело, но и отдельные островки в стороне — тогда при
+ * отрывании такой клочок исчезал бы сам по себе, без связи с остальной
+ * фольгой, чего с настоящей фольгой не бывает. Для каждого участка
+ * оставляем самую крупную связную область (с учётом кругового шва по
+ * горизонтали), а все остальные клочки отдаём тем соседям, что их
+ * окружают, — многоисточниковым обходом в ширину.
+ */
+function removeIslands(regionMap, count) {
+  const total = TEXTURE_W * TEXTURE_H;
+  const compId = new Int32Array(total).fill(-1);
+  const compLabel = [];
+  const compSize = [];
+  const stack = [];
+
+  const neighbours = (idx, out) => {
+    const x = idx % TEXTURE_W;
+    const y = (idx / TEXTURE_W) | 0;
+    out[0] = y * TEXTURE_W + ((x - 1 + TEXTURE_W) % TEXTURE_W);
+    out[1] = y * TEXTURE_W + ((x + 1) % TEXTURE_W);
+    out[2] = y > 0 ? idx - TEXTURE_W : -1;
+    out[3] = y < TEXTURE_H - 1 ? idx + TEXTURE_W : -1;
+  };
+  const near = [0, 0, 0, 0];
+
+  for (let start = 0; start < total; start++) {
+    if (compId[start] !== -1) continue;
+    const label = regionMap[start];
+    const cid = compLabel.length;
+    compLabel.push(label);
+    let size = 0;
+    stack.length = 0;
+    stack.push(start);
+    compId[start] = cid;
+    while (stack.length) {
+      const idx = stack.pop();
+      size++;
+      neighbours(idx, near);
+      for (let k = 0; k < 4; k++) {
+        const n = near[k];
+        if (n >= 0 && compId[n] === -1 && regionMap[n] === label) {
+          compId[n] = cid;
+          stack.push(n);
+        }
+      }
+    }
+    compSize.push(size);
+  }
+
+  const bestComp = new Array(count).fill(-1);
+  const bestSize = new Array(count).fill(-1);
+  for (let c = 0; c < compLabel.length; c++) {
+    const label = compLabel[c];
+    if (compSize[c] > bestSize[label]) {
+      bestSize[label] = compSize[c];
+      bestComp[label] = c;
+    }
+  }
+
+  const queue = [];
+  const orphan = new Uint8Array(total);
+  for (let i = 0; i < total; i++) {
+    if (compId[i] !== bestComp[regionMap[i]]) orphan[i] = 1;
+    else queue.push(i);
+  }
+  let head = 0;
+  while (head < queue.length) {
+    const idx = queue[head++];
+    const label = regionMap[idx];
+    neighbours(idx, near);
+    for (let k = 0; k < 4; k++) {
+      const n = near[k];
+      if (n >= 0 && orphan[n]) {
+        regionMap[n] = label;
+        orphan[n] = 0;
+        queue.push(n);
+      }
+    }
+  }
+}
+
+/**
  * Заранее делит ВСЮ поверхность текстуры на ровно clicksNeeded ярких
  * участков — настоящая диаграмма Вороного, без единого не закрашенного
  * зазора, только с «рваными» органическими границами вместо прямых линий.
@@ -64,6 +147,8 @@ function buildFoilRegions(count) {
       regionMap[row + x] = best;
     }
   }
+
+  removeIslands(regionMap, seeds.length);
 
   // Средний угол и высота каждого участка — по накопленным координатам его
   // пикселей (угол усредняется через синус/косинус, чтобы шов 0/2π не портил среднее).
