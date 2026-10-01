@@ -1,7 +1,8 @@
 import { setMuted, isMuted } from './audio.js';
+import { unlockSpeech, stopSpeech } from './speech.js';
 
 /** Весь HTML-интерфейс: подсказки, кружки прогресса, карточки. */
-export function createUI({ onStart, onAgain }) {
+export function createUI({ onStart, onAgain, onRepeat }) {
   const hint = document.getElementById('hint');
   const progress = document.getElementById('progress');
   const reveal = document.getElementById('reveal');
@@ -9,9 +10,11 @@ export function createUI({ onStart, onAgain }) {
   const startOverlay = document.getElementById('start');
   const loading = document.getElementById('loading');
   const muteButton = document.getElementById('mute');
+  const repeatButton = document.getElementById('repeat');
 
   document.getElementById('play').addEventListener('click', () => {
     startOverlay.classList.add('hidden');
+    unlockSpeech(); // голос можно включать только из жеста игрока
     onStart();
   });
 
@@ -20,11 +23,14 @@ export function createUI({ onStart, onAgain }) {
     onAgain();
   });
 
+  repeatButton.addEventListener('click', onRepeat);
+
   muteButton.addEventListener('click', () => {
     const next = !isMuted();
     setMuted(next);
+    if (next) stopSpeech();
     muteButton.textContent = next ? '🔇' : '🔊';
-    muteButton.setAttribute('aria-label', next ? 'Включить звук' : 'Выключить звук');
+    muteButton.setAttribute('aria-label', next ? 'Увімкнути звук' : 'Вимкнути звук');
   });
 
   let currentHint = '';

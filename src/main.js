@@ -14,6 +14,7 @@ const ui = createUI({
     game.build();
   },
   onAgain: () => game.restart(),
+  onRepeat: () => game.repeatPrompt(),
 });
 
 const game = createGame({ scene, camera, canvas, ui });

@@ -5,7 +5,20 @@ import { animate, rand } from '../utils.js';
 
 // Насыщенные, «кислотные» цвета — каждый участок сразу бросается в глаза,
 // никакого пастельного фона под ними не остаётся.
-const FOIL_COLORS = [0xff1744, 0xffd600, 0x00e5ff, 0x00e676, 0xff2d95, 0xff9100, 0xaa00ff, 0x2979ff];
+// name — как цвет называет голос диктора («Обери зелений!»), shown — то же
+// слово с ударением для надписи на экране. Оттенки разведены по кругу
+// цветов как можно дальше друг от друга, чтобы не путались соседи
+// (красный/розовый, голубой/синий, оранжевый/жёлтый).
+const FOIL_COLORS = [
+  { hex: 0xff0a0a, name: 'червоний', shown: 'черво́ний' },
+  { hex: 0xff7a00, name: 'помаранчевий', shown: 'помара́нчевий' },
+  { hex: 0xffee00, name: 'жовтий', shown: 'жо́втий' },
+  { hex: 0x00c21a, name: 'зелений', shown: 'зеле́ний' },
+  { hex: 0x12c8ff, name: 'блакитний', shown: 'блаки́тний' },
+  { hex: 0x1020e8, name: 'синій', shown: 'си́ній' },
+  { hex: 0x9b1cff, name: 'фіолетовий', shown: 'фіоле́товий' },
+  { hex: 0xff6eb4, name: 'рожевий', shown: 'ро́жевий' },
+];
 const TEXTURE_W = 1024;
 const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте)
 
@@ -117,13 +130,16 @@ function removeIslands(regionMap, count) {
  * ровно по границе своего участка, ни пикселем меньше и не больше.
  */
 function buildFoilRegions(count) {
+  // Цвета раскладываются по яйцу в случайном порядке — каждая игра новая,
+  // и малыш не может просто запомнить, где какой цвет.
+  const palette = [...FOIL_COLORS].sort(() => Math.random() - 0.5);
   const seeds = [];
   for (let i = 0; i < count; i++) {
     const baseTheta = (i / count) * Math.PI * 2;
     const theta = baseTheta + rand(-0.35, 0.35);
     const cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
     const cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
-    seeds.push({ cx, cy, color: FOIL_COLORS[i % FOIL_COLORS.length] });
+    seeds.push({ cx, cy, color: palette[i % palette.length] });
   }
 
   const regionMap = new Uint8Array(TEXTURE_W * TEXTURE_H);
@@ -193,7 +209,9 @@ function buildFoilRegions(count) {
     const wraps = box.maxX - box.minX > TEXTURE_W * 0.6;
     return {
       index: i,
-      color: seed.color,
+      color: seed.color.hex,
+      colorName: seed.color.name,
+      colorShown: seed.color.shown,
       torn: false,
       midAngle,
       t: s.n > 0 ? s.t / s.n : Math.PI / 2,
@@ -336,15 +354,21 @@ export function createFoil(clicksNeeded, debris, topology) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
 
+  // Освещение сцены очень яркое и «выбеливает» цвета до пастели, а малыш
+  // должен без сомнений отличить зелёный от голубого. Поэтому цвет участка
+  // в основном светится сам (emissive), диффузная часть приглушена, а
+  // тональная компрессия отключена — оттенок остаётся таким, как задан.
   const material = new THREE.MeshStandardMaterial({
     map: texture,
+    color: new THREE.Color(0x777777),
     emissiveMap: texture,
     emissive: new THREE.Color(0xffffff),
-    emissiveIntensity: 0.55,
+    emissiveIntensity: 0.8,
     transparent: true,
-    metalness: 0.22,
-    roughness: 0.45,
-    envMapIntensity: 0.55,
+    metalness: 0.1,
+    roughness: 0.5,
+    envMapIntensity: 0.3,
+    toneMapped: false,
     side: THREE.DoubleSide,
   });
 
@@ -438,6 +462,16 @@ export function createFoil(clicksNeeded, debris, topology) {
     /** Ещё целые участки — цели для доворота яйца (у каждого есть .midAngle). */
     get targets() {
       return patches.filter((p) => !p.torn);
+    },
+    /**
+     * Участок фольги под точкой текстуры (u, v) — или null, если он уже
+     * сорван. Нужен, чтобы понять, на какой именно цвет нажал игрок.
+     */
+    patchAtUV(u, v) {
+      const x = Math.min(TEXTURE_W - 1, Math.max(0, Math.floor(u * TEXTURE_W)));
+      const y = Math.min(TEXTURE_H - 1, Math.max(0, Math.floor((1 - v) * TEXTURE_H)));
+      const patch = patches[regionMap[y * TEXTURE_W + x]];
+      return patch.torn ? null : patch;
     },
     peelPatch,
     finish,

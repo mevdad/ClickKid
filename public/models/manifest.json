@@ -1,15 +1,5 @@
 {
-  "tiger": {
-    "file": "tiger.glb",
-    "name": "Тигрёнок"
-  },
-  "baby": {
-    "file": "baby.glb",
-    "name": "Малыш"
-  },
-  "boy": {
-    "file": "boy.glb",
-    "name": "Мальчик",
-    "escape": true
-  }
+  "tiger": { "file": "tiger.glb", "name": "Тигреня" },
+  "baby": { "file": "baby.glb", "name": "Малюк" },
+  "boy": { "file": "boy.glb", "name": "Хлопчик", "escape": true }
 }

@@ -80,5 +80,5 @@ export function createBear() {
     head.rotation.x = Math.sin(elapsed * 0.9) * 0.06 + 0.04;
   }
 
-  return { group, name: 'Медвежонок', update };
+  return { group, name: 'Ведмежа', update };
 }

@@ -10,7 +10,7 @@
 
 ```json
 {
-  "bee": { "file": "bee.glb", "name": "Пчёлка" },
+  "bee": { "file": "bee.glb", "name": "Бджілка" },
   "bear": { "file": "bear.glb", "name": "Медвежонок" },
   "piglet": { "file": "piglet.glb", "name": "Поросёнок" }
 }
