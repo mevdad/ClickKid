@@ -304,7 +304,8 @@ export function createGame({ scene, camera, canvas, ui }) {
       figureHolder.position.y = fromY + (toY - fromY) * e;
       figureHolder.scale.setScalar(Math.max(0.001, e));
     }, () => {
-      setBusy(false);
+      if (figure.escape) runAway();
+      else setBusy(false);
     });
 
     const skyOrigin = new THREE.Vector3(0, CAPSULE_TOP_Y + 1.7, -0.5);
@@ -313,7 +314,24 @@ export function createGame({ scene, camera, canvas, ui }) {
     fireworks.launch(skyOrigin, { count: 5, onBurst: () => audio.sfxBoom() });
     ui.setHint('Ура! Ты открыл сюрприз!');
     ui.clearProgress();
-    ui.showReveal(figure.name);
+    // Убегающей фигурке даём сначала убежать — карточка внизу не закроет её.
+    if (!figure.escape) ui.showReveal(figure.name);
+  }
+
+  /**
+   * Фигурка выскочила из яйца и убегает. Дальше она бежит по всей сцене,
+   * поэтому выводим её из покачивающегося яйца в мировые координаты —
+   * иначе путь «качался» бы вместе с яйцом.
+   */
+  function runAway() {
+    scene.attach(figureHolder);
+    ui.setHint('Ой, он убегает!');
+    figure.escape(figureHolder, () => {
+      figureHolder.visible = false;
+      ui.setHint('Убежал! Откроем ещё яйцо?');
+      ui.showReveal(figure.name);
+      setBusy(false);
+    });
   }
 
   function teardown() {
@@ -334,11 +352,17 @@ export function createGame({ scene, camera, canvas, ui }) {
       figureHolder.traverse((obj) => {
         if (obj.isMesh) {
           obj.geometry.dispose();
-          if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-          else obj.material?.dispose();
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const material of materials) {
+            if (!material) continue;
+            // У моделей из .glb тяжёлые текстуры — освобождаем и их.
+            for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
+            material.dispose();
+          }
         }
       });
     }
+    figureHolder?.removeFromParent(); // убегающая фигурка живёт прямо в сцене
     root.clear();
     root.scale.setScalar(1);
     baseRotationY = 0;
