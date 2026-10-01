@@ -30,7 +30,7 @@ export function createUI({ onStart, onAgain, onRepeat }) {
     setMuted(next);
     if (next) stopSpeech();
     muteButton.textContent = next ? '🔇' : '🔊';
-    muteButton.setAttribute('aria-label', next ? 'Включить звук' : 'Выключить звук');
+    muteButton.setAttribute('aria-label', next ? 'Увімкнути звук' : 'Вимкнути звук');
   });
 
   let currentHint = '';

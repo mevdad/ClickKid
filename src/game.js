@@ -13,13 +13,13 @@ import { tween, clearAnimations, easeOutBack, easeOutCubic, easeOutElastic } fro
 const FOIL_SEGMENTS = 8;
 const CAPSULE_HITS = 3;
 
-const PRAISE = ['Молодец!', 'Умница!', 'Здорово!', 'Правильно!'];
+const PRAISE = ['Молодець!', 'Розумничка!', 'Чудово!', 'Правильно!'];
 const REMIND_AFTER = 10;  // секунд тишины, после которых диктор повторяет задание
 const VISIBLE_ANGLE = 1.0; // цвет просим только среди участков, что видны игроку (рад. от центра)
 
 const HINTS = {
-  chocolate: 'Отламывай шоколад!',
-  capsule: 'Крути крышечку!',
+  chocolate: 'Відламуй шоколад!',
+  capsule: 'Крути кришечку!',
 };
 
 /**
@@ -116,7 +116,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    askNextColor('Давай снимем фольгу! ');
+    askNextColor('Давай знімемо фольгу! ');
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -232,14 +232,14 @@ export function createGame({ scene, camera, canvas, ui }) {
     askedPatch = visible[Math.floor(Math.random() * visible.length)] || view;
     idleTime = 0;
 
-    ui.setHint(`Выбери ${askedPatch.colorName}!`);
-    speech.speak(`${prefix}Выбери ${askedPatch.colorName}!`);
+    ui.setHint(`Обери ${askedPatch.colorShown}!`);
+    speech.speak(`${prefix}Обери ${askedPatch.colorName}!`);
   }
 
   /** Повторяет задание голосом — по кнопке, по пробелу или когда игрок долго молчит. */
   function repeatPrompt() {
     idleTime = 0;
-    if (state === 'foil' && askedPatch) speech.speak(`Выбери ${askedPatch.colorName}!`);
+    if (state === 'foil' && askedPatch) speech.speak(`Обери ${askedPatch.colorName}!`);
   }
 
   /** Участок фольги под пальцем/курсором (null — мимо яйца или в сорванном месте). */
@@ -280,7 +280,7 @@ export function createGame({ scene, camera, canvas, ui }) {
       setBusy(true);
       foil.finish(() => {
         setState('chocolate');
-        speech.speak(`Молодец! ${HINTS.chocolate}`);
+        speech.speak(`Молодець! ${HINTS.chocolate}`);
         pickNewTarget(chocolate.meshes);
         setBusy(false);
       });
@@ -296,7 +296,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     }, () => {
       shake = 0;
     });
-    speech.speak(`Это ${patch.colorName}. Найди ${askedPatch.colorName}!`);
+    speech.speak(`Це ${patch.colorName}. Знайди ${askedPatch.colorName}!`);
   }
 
   function advance() {
@@ -380,8 +380,8 @@ export function createGame({ scene, camera, canvas, ui }) {
     audio.sfxFanfare();
     confetti.burst(new THREE.Vector3(0, CAPSULE_TOP_Y + 0.5, 0));
     fireworks.launch(skyOrigin, { count: 5, onBurst: () => audio.sfxBoom() });
-    ui.setHint('Ура! Ты открыл сюрприз!');
-    speech.speak(`Ура! Это ${figure.name}!`);
+    ui.setHint('Ура! Сюрприз відкрито!');
+    speech.speak(`Ура! Це ${figure.name}!`);
     ui.clearProgress();
     ui.showReveal(figure.name);
   }

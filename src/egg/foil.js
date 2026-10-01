@@ -5,16 +5,19 @@ import { animate, rand } from '../utils.js';
 
 // Насыщенные, «кислотные» цвета — каждый участок сразу бросается в глаза,
 // никакого пастельного фона под ними не остаётся.
-// name — как цвет называет голос диктора («Выбери зелёный!»).
+// name — как цвет называет голос диктора («Обери зелений!»), shown — то же
+// слово с ударением для надписи на экране. Оттенки разведены по кругу
+// цветов как можно дальше друг от друга, чтобы не путались соседи
+// (красный/розовый, голубой/синий, оранжевый/жёлтый).
 const FOIL_COLORS = [
-  { hex: 0xff1744, name: 'красный' },
-  { hex: 0xffd600, name: 'жёлтый' },
-  { hex: 0x00e5ff, name: 'голубой' },
-  { hex: 0x00e676, name: 'зелёный' },
-  { hex: 0xff2d95, name: 'розовый' },
-  { hex: 0xff9100, name: 'оранжевый' },
-  { hex: 0xaa00ff, name: 'фиолетовый' },
-  { hex: 0x2979ff, name: 'синий' },
+  { hex: 0xff0a0a, name: 'червоний', shown: 'черво́ний' },
+  { hex: 0xff7a00, name: 'помаранчевий', shown: 'помара́нчевий' },
+  { hex: 0xffee00, name: 'жовтий', shown: 'жо́втий' },
+  { hex: 0x00c21a, name: 'зелений', shown: 'зеле́ний' },
+  { hex: 0x12c8ff, name: 'блакитний', shown: 'блаки́тний' },
+  { hex: 0x1020e8, name: 'синій', shown: 'си́ній' },
+  { hex: 0x9b1cff, name: 'фіолетовий', shown: 'фіоле́товий' },
+  { hex: 0xff6eb4, name: 'рожевий', shown: 'ро́жевий' },
 ];
 const TEXTURE_W = 1024;
 const TEXTURE_H = 512; // theta: 0..2π (по ширине), t: 0..π (по высоте)
@@ -208,6 +211,7 @@ function buildFoilRegions(count) {
       index: i,
       color: seed.color.hex,
       colorName: seed.color.name,
+      colorShown: seed.color.shown,
       torn: false,
       midAngle,
       t: s.n > 0 ? s.t / s.n : Math.PI / 2,
@@ -350,15 +354,21 @@ export function createFoil(clicksNeeded, debris, topology) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
 
+  // Освещение сцены очень яркое и «выбеливает» цвета до пастели, а малыш
+  // должен без сомнений отличить зелёный от голубого. Поэтому цвет участка
+  // в основном светится сам (emissive), диффузная часть приглушена, а
+  // тональная компрессия отключена — оттенок остаётся таким, как задан.
   const material = new THREE.MeshStandardMaterial({
     map: texture,
+    color: new THREE.Color(0x777777),
     emissiveMap: texture,
     emissive: new THREE.Color(0xffffff),
-    emissiveIntensity: 0.55,
+    emissiveIntensity: 0.8,
     transparent: true,
-    metalness: 0.22,
-    roughness: 0.45,
-    envMapIntensity: 0.55,
+    metalness: 0.1,
+    roughness: 0.5,
+    envMapIntensity: 0.3,
+    toneMapped: false,
     side: THREE.DoubleSide,
   });
 

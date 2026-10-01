@@ -88,5 +88,5 @@ export function createPiglet() {
     tail.rotation.z = Math.sin(elapsed * 4) * 0.3;
   }
 
-  return { group, name: 'Поросёнок', update };
+  return { group, name: 'Поросятко', update };
 }

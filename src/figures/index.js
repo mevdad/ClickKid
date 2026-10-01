@@ -15,11 +15,11 @@ import { createBaby } from './baby.js';
  * она будет использована вместо процедурной.
  */
 export const FIGURES = [
-  { id: 'bee', name: 'Пчёлка', create: createBee },
-  { id: 'bear', name: 'Медвежонок', create: createBear },
-  { id: 'piglet', name: 'Поросёнок', create: createPiglet },
-  { id: 'tiger', name: 'Тигрёнок', create: createTiger },
-  { id: 'baby', name: 'Малыш', create: createBaby },
+  { id: 'bee', name: 'Бджілка', create: createBee },
+  { id: 'bear', name: 'Ведмежа', create: createBear },
+  { id: 'piglet', name: 'Поросятко', create: createPiglet },
+  { id: 'tiger', name: 'Тигреня', create: createTiger },
+  { id: 'baby', name: 'Малюк', create: createBaby },
 ];
 
 const TARGET_HEIGHT = 1.15; // на такую высоту масштабируется любая модель

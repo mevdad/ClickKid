@@ -10,9 +10,9 @@ let voice = null;
 function pickVoice() {
   if (!synth) return;
   const voices = synth.getVoices();
-  const russian = voices.filter((v) => /^ru\b/i.test(v.lang.replace('_', '-')));
+  const ukrainian = voices.filter((v) => /^uk\b/i.test(v.lang.replace('_', '-')));
   // Предпочитаем «родной» голос устройства: он не требует сети и не запаздывает.
-  voice = russian.find((v) => v.localService) || russian[0] || null;
+  voice = ukrainian.find((v) => v.localService) || ukrainian[0] || null;
 }
 
 if (synth) {
@@ -36,7 +36,7 @@ export function speak(text) {
   if (!synth || isMuted()) return;
   synth.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'ru-RU';
+  utterance.lang = 'uk-UA';
   if (voice) utterance.voice = voice;
   utterance.rate = 0.9;  // малышу проще понять неспешную речь
   utterance.pitch = 1.15;
