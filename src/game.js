@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createFoil } from './egg/foil.js';
+import { FOIL_MODES, pinnedMode } from './egg/foilGlyphs.js';
 import { createChocolate } from './egg/chocolate.js';
 import { createShellTopology } from './egg/shellPieces.js';
 import { createCapsule, CAPSULE_TOP_Y } from './egg/capsule.js';
@@ -15,12 +16,23 @@ const CAPSULE_HITS = 3;
 
 const PRAISE = ['Молодець!', 'Розумничка!', 'Чудово!', 'Правильно!'];
 const REMIND_AFTER = 10;  // секунд тишины, после которых диктор повторяет задание
-const VISIBLE_ANGLE = 1.0; // цвет просим только среди участков, что видны игроку (рад. от центра)
+const VISIBLE_ANGLE = 1.0; // участок просим только среди участков, что видны игроку (рад. от центра)
 
 const HINTS = {
   chocolate: 'Відламуй шоколад!',
   capsule: 'Крути кришечку!',
 };
+
+// Сколько яиц уже собрано за всё время страницы — по нему выбирается вид
+// задания на фольге: 1-е яйцо — цвета, 2-е — цифры, 3-е — буквы, дальше по кругу.
+let eggsBuilt = 0;
+
+/** Вид задания для нового яйца; ?mode=colors|digits|letters фиксирует его (для отладки). */
+function nextFoilMode() {
+  const mode = pinnedMode() ?? FOIL_MODES[eggsBuilt % FOIL_MODES.length];
+  eggsBuilt++;
+  return mode;
+}
 
 /**
  * Логика игры: слой фольги → шоколад → контейнер → игрушка.
@@ -29,9 +41,11 @@ const HINTS = {
  * срывает/откусывает намеченный целый участок, а яйцо само доворачивается
  * так, чтобы следующий ещё целый участок оказался лицом к игроку — никогда
  * не приходится смотреть на пустую сторону, гадая, куда двинуться дальше.
- * Фольга — игра на цвета: диктор просит «Выбери зелёный!», и сорвать
- * получится только тот участок, что назвали; на другой цвет яйцо лишь
- * покачивается и подсказывает, какой цвет нажат и какой нужен.
+ * Фольга — игра на внимание: диктор просит «Обери зелений!» (или «Обери
+ * цифру п'ять!», «Обери літеру ем!»), и сорвать получится только тот участок,
+ * что назвали; на другой яйцо лишь покачивается и подсказывает, что нажато и
+ * что нужно. Вид задания (цвета → цифры → буквы → снова цвета) меняется от
+ * яйца к яйцу.
  * Фольга рвётся целым цветным участком по контуру (хаотичным, но округлым
  * пятном, без единой прямой грани) — как будто её реально сдирают.
  * Шоколадный кусочек «откусывают»: он сжимается на месте и тает, никуда
@@ -68,9 +82,9 @@ export function createGame({ scene, camera, canvas, ui }) {
   let lastFigureId = null;
   let chocolateTotal = 0;
   let activeTarget = null; // намеченный кусочек шоколада, который сработает по клику
-  let askedPatch = null;   // участок фольги, цвет которого сейчас просит назвать диктор
+  let askedPatch = null;   // участок фольги, который сейчас просит выбрать диктор
   let idleTime = 0;        // сколько секунд игрок не отвечает на задание
-  let shake = 0;           // «мотание головой» яйца при неверном цвете
+  let shake = 0;           // «мотание головой» яйца при неверном выборе
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
@@ -98,7 +112,7 @@ export function createGame({ scene, camera, canvas, ui }) {
     // те же точки поверхности, поэтому фольга гарантированно не «тонет»
     // в шоколаде и не отстаёт от него зазором неправильной формы.
     const topology = createShellTopology();
-    foil = createFoil(FOIL_SEGMENTS, debris, topology);
+    foil = createFoil(FOIL_SEGMENTS, debris, topology, nextFoilMode());
     chocolate = createChocolate(topology);
     capsule = createCapsule();
     chocolateTotal = chocolate.remaining;
@@ -116,7 +130,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    askNextColor('Давай знімемо фольгу! ');
+    askNextPatch('Давай знімемо фольгу! ');
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -204,11 +218,12 @@ export function createGame({ scene, camera, canvas, ui }) {
 
   /**
    * Доворачивает яйцо к ближайшему ещё целому участку фольги (на минимальный
-   * угол), а затем просит игрока выбрать цвет одного из участков, видимых
-   * с этой стороны, — не обязательно того, что ровно по центру, иначе
-   * достаточно было бы всегда нажимать в середину яйца.
+   * угол), а затем просит игрока выбрать один из участков, видимых с этой
+   * стороны (по цвету, цифре или букве — смотря какое задание у этого яйца),
+   * — не обязательно того, что ровно по центру, иначе достаточно было бы
+   * всегда нажимать в середину яйца.
    */
-  function askNextColor(prefix = '') {
+  function askNextPatch(prefix = '') {
     const targets = foil?.targets ?? [];
     if (!targets.length) {
       askedPatch = null;
@@ -232,14 +247,14 @@ export function createGame({ scene, camera, canvas, ui }) {
     askedPatch = visible[Math.floor(Math.random() * visible.length)] || view;
     idleTime = 0;
 
-    ui.setHint(`Обери ${askedPatch.colorShown}!`);
-    speech.speak(`${prefix}Обери ${askedPatch.colorName}!`);
+    ui.setHint(`Обери ${askedPatch.askShown}!`);
+    speech.speak(`${prefix}Обери ${askedPatch.askSpoken}!`);
   }
 
   /** Повторяет задание голосом — по кнопке, по пробелу или когда игрок долго молчит. */
   function repeatPrompt() {
     idleTime = 0;
-    if (state === 'foil' && askedPatch) speech.speak(`Обери ${askedPatch.colorName}!`);
+    if (state === 'foil' && askedPatch) speech.speak(`Обери ${askedPatch.askSpoken}!`);
   }
 
   /** Участок фольги под пальцем/курсором (null — мимо яйца или в сорванном месте). */
@@ -264,11 +279,11 @@ export function createGame({ scene, camera, canvas, ui }) {
       audio.sfxTap();
       return;
     }
-    if (patch === askedPatch) chooseRightColor(patch);
-    else chooseWrongColor(patch);
+    if (patch === askedPatch) chooseRightPatch(patch);
+    else chooseWrongPatch(patch);
   }
 
-  function chooseRightColor(patch) {
+  function chooseRightPatch(patch) {
     askedPatch = null;
     pulse();
     audio.sfxFoil();
@@ -285,18 +300,18 @@ export function createGame({ scene, camera, canvas, ui }) {
         setBusy(false);
       });
     } else {
-      askNextColor(`${PRAISE[Math.floor(Math.random() * PRAISE.length)]} `);
+      askNextPatch(`${PRAISE[Math.floor(Math.random() * PRAISE.length)]} `);
     }
   }
 
-  function chooseWrongColor(patch) {
+  function chooseWrongPatch(patch) {
     audio.sfxWrong();
     tween(0.45, (t) => {
       shake = Math.sin(t * 38) * 0.09 * (1 - t);
     }, () => {
       shake = 0;
     });
-    speech.speak(`Це ${patch.colorName}. Знайди ${askedPatch.colorName}!`);
+    speech.speak(`Це ${patch.saySpoken}. Знайди ${askedPatch.askSpoken}!`);
   }
 
   function advance() {
@@ -306,7 +321,7 @@ export function createGame({ scene, camera, canvas, ui }) {
       return;
     }
 
-    // Фольгу рвут только выбором цвета (tapFoil) — «клик куда угодно» ей не подходит.
+    // Фольгу рвут только выбором названного участка (tapFoil) — «клик куда угодно» ей не подходит.
     if (state === 'foil') return;
     if (state === 'chocolate' && !activeTarget) return;
 
