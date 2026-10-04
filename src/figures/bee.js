@@ -85,5 +85,5 @@ export function createBee() {
     group.rotation.z = Math.sin(elapsed * 1.7) * 0.06;
   }
 
-  return { group, name: 'Пчёлка', update };
+  return { group, name: 'Бджілка', update };
 }

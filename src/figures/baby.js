@@ -56,5 +56,5 @@ export function createBaby() {
     group.rotation.y = Math.sin(elapsed * 0.7) * 0.12;
   }
 
-  return { group, name: 'Малыш', update };
+  return { group, name: 'Малюк', update };
 }

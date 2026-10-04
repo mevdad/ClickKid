@@ -83,5 +83,5 @@ export function createTiger() {
     tail.rotation.z = Math.sin(elapsed * 2.4) * 0.25;
   }
 
-  return { group, name: 'Тигрёнок', update };
+  return { group, name: 'Тигреня', update };
 }

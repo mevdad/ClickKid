@@ -7,15 +7,19 @@ import { FIGURES, createFigure } from './figures/index.js';
 import { createConfetti } from './confetti.js';
 import { createFireworks } from './fireworks.js';
 import * as audio from './audio.js';
+import * as speech from './speech.js';
 import { tween, clearAnimations, easeOutBack, easeOutCubic, easeOutElastic } from './utils.js';
 
 const FOIL_SEGMENTS = 8;
 const CAPSULE_HITS = 3;
 
+const PRAISE = ['Молодець!', 'Розумничка!', 'Чудово!', 'Правильно!'];
+const REMIND_AFTER = 10;  // секунд тишины, после которых диктор повторяет задание
+const VISIBLE_ANGLE = 1.0; // цвет просим только среди участков, что видны игроку (рад. от центра)
+
 const HINTS = {
-  foil: 'Снимай фольгу!',
-  chocolate: 'Отламывай шоколад!',
-  capsule: 'Крути крышечку!',
+  chocolate: 'Відламуй шоколад!',
+  capsule: 'Крути кришечку!',
 };
 
 /**
@@ -25,6 +29,9 @@ const HINTS = {
  * срывает/откусывает намеченный целый участок, а яйцо само доворачивается
  * так, чтобы следующий ещё целый участок оказался лицом к игроку — никогда
  * не приходится смотреть на пустую сторону, гадая, куда двинуться дальше.
+ * Фольга — игра на цвета: диктор просит «Выбери зелёный!», и сорвать
+ * получится только тот участок, что назвали; на другой цвет яйцо лишь
+ * покачивается и подсказывает, какой цвет нажат и какой нужен.
  * Фольга рвётся целым цветным участком по контуру (хаотичным, но округлым
  * пятном, без единой прямой грани) — как будто её реально сдирают.
  * Шоколадный кусочек «откусывают»: он сжимается на месте и тает, никуда
@@ -60,7 +67,12 @@ export function createGame({ scene, camera, canvas, ui }) {
   let figureHolder = null;
   let lastFigureId = null;
   let chocolateTotal = 0;
-  let activeTarget = null; // намеченный участок фольги/кусочек шоколада, который сработает по клику
+  let activeTarget = null; // намеченный кусочек шоколада, который сработает по клику
+  let askedPatch = null;   // участок фольги, цвет которого сейчас просит назвать диктор
+  let idleTime = 0;        // сколько секунд игрок не отвечает на задание
+  let shake = 0;           // «мотание головой» яйца при неверном цвете
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
 
   /**
    * Следующая игрушка — случайная, но не та же, что была только что.
@@ -104,7 +116,7 @@ export function createGame({ scene, camera, canvas, ui }) {
 
     ui.hideLoading();
     setState('foil');
-    pickNearestFoilTarget();
+    askNextColor('Давай знімемо фольгу! ');
   }
 
   /** Снимая блокировку, доигрываем клик, сделанный во время анимации. */
@@ -191,27 +203,100 @@ export function createGame({ scene, camera, canvas, ui }) {
   }
 
   /**
-   * Выбирает ближайший к текущему повороту ещё целый участок фольги —
-   * без привязки к высоте (в отличие от шоколада, фольгу можно рвать
-   * в любом порядке), лишь бы яйцо доворачивалось на минимальный угол.
+   * Доворачивает яйцо к ближайшему ещё целому участку фольги (на минимальный
+   * угол), а затем просит игрока выбрать цвет одного из участков, видимых
+   * с этой стороны, — не обязательно того, что ровно по центру, иначе
+   * достаточно было бы всегда нажимать в середину яйца.
    */
-  function pickNearestFoilTarget() {
+  function askNextColor(prefix = '') {
     const targets = foil?.targets ?? [];
     if (!targets.length) {
-      activeTarget = null;
+      askedPatch = null;
       return;
     }
-    let best = targets[0];
-    let bestDelta = Infinity;
+    let view = targets[0];
+    let viewDelta = Infinity;
     for (const patch of targets) {
       const delta = Math.abs(shortestDelta(baseRotationY, -patch.midAngle));
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        best = patch;
+      if (delta < viewDelta) {
+        viewDelta = delta;
+        view = patch;
       }
     }
-    activeTarget = best;
-    faceAngle(activeTarget.midAngle);
+    const front = baseRotationY + shortestDelta(baseRotationY, -view.midAngle);
+    faceAngle(view.midAngle);
+
+    const visible = targets.filter(
+      (patch) => Math.abs(shortestDelta(front, -patch.midAngle)) < VISIBLE_ANGLE
+    );
+    askedPatch = visible[Math.floor(Math.random() * visible.length)] || view;
+    idleTime = 0;
+
+    ui.setHint(`Обери ${askedPatch.colorShown}!`);
+    speech.speak(`${prefix}Обери ${askedPatch.colorName}!`);
+  }
+
+  /** Повторяет задание голосом — по кнопке, по пробелу или когда игрок долго молчит. */
+  function repeatPrompt() {
+    idleTime = 0;
+    if (state === 'foil' && askedPatch) speech.speak(`Обери ${askedPatch.colorName}!`);
+  }
+
+  /** Участок фольги под пальцем/курсором (null — мимо яйца или в сорванном месте). */
+  function patchUnderPointer(event) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycaster.setFromCamera(pointer, camera);
+    // Берём только самое близкое попадание: сквозь дырку в фольге
+    // задняя стенка оболочки не считается.
+    const hit = raycaster.intersectObject(foil.mesh)[0];
+    return hit?.uv ? foil.patchAtUV(hit.uv.x, hit.uv.y) : null;
+  }
+
+  function tapFoil(event) {
+    if (busy || !askedPatch) return;
+    idleTime = 0;
+    const patch = patchUnderPointer(event);
+    if (!patch) {
+      audio.sfxTap();
+      return;
+    }
+    if (patch === askedPatch) chooseRightColor(patch);
+    else chooseWrongColor(patch);
+  }
+
+  function chooseRightColor(patch) {
+    askedPatch = null;
+    pulse();
+    audio.sfxFoil();
+    audio.sfxCorrect();
+    foil.peelPatch(patch);
+    updateProgress();
+
+    if (foil.remaining === 0) {
+      setBusy(true);
+      foil.finish(() => {
+        setState('chocolate');
+        speech.speak(`Молодець! ${HINTS.chocolate}`);
+        pickNewTarget(chocolate.meshes);
+        setBusy(false);
+      });
+    } else {
+      askNextColor(`${PRAISE[Math.floor(Math.random() * PRAISE.length)]} `);
+    }
+  }
+
+  function chooseWrongColor(patch) {
+    audio.sfxWrong();
+    tween(0.45, (t) => {
+      shake = Math.sin(t * 38) * 0.09 * (1 - t);
+    }, () => {
+      shake = 0;
+    });
+    speech.speak(`Це ${patch.colorName}. Знайди ${askedPatch.colorName}!`);
   }
 
   function advance() {
@@ -221,26 +306,9 @@ export function createGame({ scene, camera, canvas, ui }) {
       return;
     }
 
-    if ((state === 'foil' || state === 'chocolate') && !activeTarget) return;
-
-    if (state === 'foil') {
-      pulse();
-      audio.sfxFoil();
-      foil.peelPatch(activeTarget);
-      updateProgress();
-
-      if (foil.remaining === 0) {
-        setBusy(true);
-        foil.finish(() => {
-          setState('chocolate');
-          pickNewTarget(chocolate.meshes);
-          setBusy(false);
-        });
-      } else {
-        pickNearestFoilTarget();
-      }
-      return;
-    }
+    // Фольгу рвут только выбором цвета (tapFoil) — «клик куда угодно» ей не подходит.
+    if (state === 'foil') return;
+    if (state === 'chocolate' && !activeTarget) return;
 
     pulse();
 
@@ -257,6 +325,7 @@ export function createGame({ scene, camera, canvas, ui }) {
         setBusy(true);
         capsule.reveal(() => {
           setState('capsule');
+          speech.speak(HINTS.capsule);
           setBusy(false);
         });
       }
@@ -304,20 +373,42 @@ export function createGame({ scene, camera, canvas, ui }) {
       figureHolder.position.y = fromY + (toY - fromY) * e;
       figureHolder.scale.setScalar(Math.max(0.001, e));
     }, () => {
-      setBusy(false);
+      if (figure.escape) runAway();
+      else setBusy(false);
     });
 
     const skyOrigin = new THREE.Vector3(0, CAPSULE_TOP_Y + 1.7, -0.5);
     audio.sfxFanfare();
     confetti.burst(new THREE.Vector3(0, CAPSULE_TOP_Y + 0.5, 0));
     fireworks.launch(skyOrigin, { count: 5, onBurst: () => audio.sfxBoom() });
-    ui.setHint('Ура! Ты открыл сюрприз!');
+    ui.setHint('Ура! Сюрприз відкрито!');
+    speech.speak(`Ура! Це ${figure.name}!`);
+    // Зверёк «отзывается» сразу после того, как диктор назвал его.
+    setTimeout(() => { if (state === 'reveal') audio.sfxAnimal(lastFigureId); }, 1800);
     ui.clearProgress();
-    ui.showReveal(figure.name);
+    // Убегающей фигурке даём сначала убежать — карточка внизу не закроет её.
+    if (!figure.escape) ui.showReveal(figure.name);
+  }
+
+  /**
+   * Фигурка выскочила из яйца и убегает. Дальше она бежит по всей сцене,
+   * поэтому выводим её из покачивающегося яйца в мировые координаты —
+   * иначе путь «качался» бы вместе с яйцом.
+   */
+  function runAway() {
+    scene.attach(figureHolder);
+    ui.setHint('Ой, він тікає!');
+    figure.escape(figureHolder, () => {
+      figureHolder.visible = false;
+      ui.setHint('Втік! Відкриємо ще яйце?');
+      ui.showReveal(figure.name);
+      setBusy(false);
+    });
   }
 
   function teardown() {
     clearAnimations();
+    speech.stopSpeech();
     confetti.clear();
     fireworks.clear();
     foil?.dispose();
@@ -334,16 +425,25 @@ export function createGame({ scene, camera, canvas, ui }) {
       figureHolder.traverse((obj) => {
         if (obj.isMesh) {
           obj.geometry.dispose();
-          if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-          else obj.material?.dispose();
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const material of materials) {
+            if (!material) continue;
+            // У моделей из .glb тяжёлые текстуры — освобождаем и их.
+            for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
+            material.dispose();
+          }
         }
       });
     }
+    figureHolder?.removeFromParent(); // убегающая фигурка живёт прямо в сцене
     root.clear();
     root.scale.setScalar(1);
     baseRotationY = 0;
     swayAmplitude = 0.12;
     activeTarget = null;
+    askedPatch = null;
+    idleTime = 0;
+    shake = 0;
     foil = chocolate = capsule = figure = figureHolder = null;
   }
 
@@ -356,9 +456,14 @@ export function createGame({ scene, camera, canvas, ui }) {
     setBusy(false);
   }
 
-  function onPointerDown() {
+  function onPointerDown(event) {
     audio.unlockAudio();
-    advance();
+    if (state === 'foil') tapFoil(event);
+    else if (state === 'reveal') {
+      // Тык по игрушке — она снова подаёт голос.
+      pulse(0.03);
+      audio.sfxAnimal(lastFigureId);
+    } else advance();
   }
 
   canvas.addEventListener('pointerdown', onPointerDown);
@@ -369,17 +474,24 @@ export function createGame({ scene, camera, canvas, ui }) {
     if (document.activeElement?.tagName === 'BUTTON') return;
     event.preventDefault();
     audio.unlockAudio();
-    advance();
+    if (state === 'foil') repeatPrompt();
+    else advance();
   });
 
   function update(dt) {
     elapsed += dt;
     swayTime += dt;
     // Целевой угол плюс лёгкое покачивание — так сцена никогда не выглядит статичной.
-    root.rotation.y = baseRotationY + Math.sin(swayTime * 0.7) * swayAmplitude;
+    root.rotation.y = baseRotationY + Math.sin(swayTime * 0.7) * swayAmplitude + shake;
     root.position.y = Math.sin(elapsed * 1.3) * 0.03;
     figure?.update(dt, elapsed);
+
+    // Игрок замешкался — диктор мягко повторяет задание.
+    if (state === 'foil' && askedPatch && !busy) {
+      idleTime += dt;
+      if (idleTime >= REMIND_AFTER) repeatPrompt();
+    }
   }
 
-  return { build, restart, update };
+  return { build, restart, update, repeatPrompt };
 }
