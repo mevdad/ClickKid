@@ -2,11 +2,13 @@ import * as THREE from 'three';
 import { EGG } from './eggShape.js';
 import { buildFullShellGeometry, surfacePoint } from './shellPieces.js';
 import { animate, rand } from '../utils.js';
+import { pickGlyphs, paintGlyphs } from './foilGlyphs.js';
 
 // Насыщенные, «кислотные» цвета — каждый участок сразу бросается в глаза,
 // никакого пастельного фона под ними не остаётся.
 // name — как цвет называет голос диктора («Обери зелений!»), shown — то же
-// слово с ударением для надписи на экране. Оттенки разведены по кругу
+// слово с ударением для надписи на экране. В режимах цифр и букв цвет
+// остаётся лишь фоном, на котором нарисован знак. Оттенки разведены по кругу
 // цветов как можно дальше друг от друга, чтобы не путались соседи
 // (красный/розовый, голубой/синий, оранжевый/жёлтый).
 const FOIL_COLORS = [
@@ -129,17 +131,24 @@ function removeIslands(regionMap, count) {
  * распределение используется и при отрывании, поэтому фольга снимается
  * ровно по границе своего участка, ни пикселем меньше и не больше.
  */
-function buildFoilRegions(count) {
+function buildFoilRegions(count, mode) {
   // Цвета раскладываются по яйцу в случайном порядке — каждая игра новая,
   // и малыш не может просто запомнить, где какой цвет.
   const palette = [...FOIL_COLORS].sort(() => Math.random() - 0.5);
+  // В режимах цифр и букв у каждого участка свой уникальный знак (иначе null).
+  const glyphs = pickGlyphs(mode, count);
   const seeds = [];
   for (let i = 0; i < count; i++) {
     const baseTheta = (i / count) * Math.PI * 2;
     const theta = baseTheta + rand(-0.35, 0.35);
     const cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
     const cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
-    seeds.push({ cx, cy, color: palette[i % palette.length] });
+    const color = palette[i % palette.length];
+    // Как участок называют диктор и подсказка: цвет — по имени цвета, иначе — по знаку.
+    const name = glyphs
+      ? glyphs[i]
+      : { glyph: null, askSpoken: color.name, askShown: color.shown, saySpoken: color.name };
+    seeds.push({ cx, cy, color, name });
   }
 
   const regionMap = new Uint8Array(TEXTURE_W * TEXTURE_H);
@@ -210,8 +219,10 @@ function buildFoilRegions(count) {
     return {
       index: i,
       color: seed.color.hex,
-      colorName: seed.color.name,
-      colorShown: seed.color.shown,
+      glyph: seed.name.glyph,         // нарисованный знак («5», «М») или null для цвета
+      askSpoken: seed.name.askSpoken, // «Обери ...!» голосом
+      askShown: seed.name.askShown,   // «Обери ...!» на экране
+      saySpoken: seed.name.saySpoken, // «Це ...» голосом
       torn: false,
       midAngle,
       t: s.n > 0 ? s.t / s.n : Math.PI / 2,
@@ -226,7 +237,10 @@ function buildFoilRegions(count) {
   return { regionMap, patches };
 }
 
-/** Заливает текстуру целиком — каждый пиксель цветом своего участка, фона не остаётся. */
+/**
+ * Заливает текстуру целиком — каждый пиксель цветом своего участка, фона не
+ * остаётся; поверх — знаки (цифры/буквы), если они есть у участков.
+ */
 function paintFoilPattern(ctx, regionMap, patches) {
   const image = ctx.createImageData(TEXTURE_W, TEXTURE_H);
   const bytes = patches.map((p) => [(p.color >> 16) & 0xff, (p.color >> 8) & 0xff, p.color & 0xff]);
@@ -238,6 +252,7 @@ function paintFoilPattern(ctx, regionMap, patches) {
     image.data[o + 2] = b;
     image.data[o + 3] = 255;
   }
+  paintGlyphs(image, regionMap, patches, TEXTURE_W, TEXTURE_H);
   ctx.putImageData(image, 0, 0);
 }
 
@@ -336,8 +351,13 @@ function spawnScrap(worldPoint, debris, color) {
  * У каждого участка известен угол на поверхности (midAngle) — по нему
  * игра (game.js) доворачивает яйцо так, чтобы очередной целый участок
  * оказался лицом к игроку, прежде чем его сорвут.
+ *
+ * mode — вид задания: 'colors' (участки различаются только цветом), 'digits'
+ * или 'letters' (на каждом участке ещё нарисована своя цифра/буква). Как
+ * участок называть вслух и на экране, хранится в нём самом (askSpoken,
+ * askShown, saySpoken) — игре не нужно знать, цвет это или знак.
  */
-export function createFoil(clicksNeeded, debris, topology) {
+export function createFoil(clicksNeeded, debris, topology, mode = 'colors') {
   const group = new THREE.Group();
   group.position.y = EGG.centerY;
 
@@ -348,7 +368,7 @@ export function createFoil(clicksNeeded, debris, topology) {
   canvas.width = TEXTURE_W;
   canvas.height = TEXTURE_H;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const { regionMap, patches } = buildFoilRegions(clicksNeeded);
+  const { regionMap, patches } = buildFoilRegions(clicksNeeded, mode);
   paintFoilPattern(ctx, regionMap, patches);
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -465,7 +485,7 @@ export function createFoil(clicksNeeded, debris, topology) {
     },
     /**
      * Участок фольги под точкой текстуры (u, v) — или null, если он уже
-     * сорван. Нужен, чтобы понять, на какой именно цвет нажал игрок.
+     * сорван. Нужен, чтобы понять, на какой именно участок нажал игрок.
      */
     patchAtUV(u, v) {
       const x = Math.min(TEXTURE_W - 1, Math.max(0, Math.floor(u * TEXTURE_W)));
