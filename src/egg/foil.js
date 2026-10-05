@@ -123,6 +123,35 @@ function removeIslands(regionMap, count) {
   }
 }
 
+// В режимах цифр и букв рваная диаграмма Вороного не годится: знак попадает
+// на узкий клочок или к самому полюсу и не читается. Поэтому яйцо делится на
+// чёткие ровные сектора — SECTOR_ROWS поясов по SECTOR_COLS долек, в центре
+// каждого сектора крупный знак. Нижний пояс сдвинут на пол-дольки (как
+// кирпичная кладка): с любой стороны яйца на виду три сектора, а не два,
+// и из чего выбирать — есть всегда.
+const SECTOR_COLS = 4;
+const SECTOR_ROWS = 2;
+// Шов между поясами чуть ниже середины текстуры: верхняя часть яйца уже
+// и круче загибается, поэтому верхнему поясу отдаём больше высоты.
+const ROW_SPLIT = 0.56;
+
+/**
+ * Сдвиг пояса по ширине текстуры: нечётные пояса — на пол-дольки относительно
+ * чётных, а вся сетка ещё на четверть дольки, чтобы шов текстуры (0/2π) не
+ * совпал ни с одной границей сектора (там рваный стык смотрелся бы трещиной).
+ */
+function rowShift(row) {
+  return TEXTURE_W / (4 * SECTOR_COLS) + (row % 2 ? TEXTURE_W / (2 * SECTOR_COLS) : 0);
+}
+
+/** Номер сектора, в который попадает пиксель текстуры (x, y). */
+function sectorOf(x, y) {
+  const row = y < TEXTURE_H * ROW_SPLIT ? 0 : 1;
+  const shifted = (x - rowShift(row) + TEXTURE_W) % TEXTURE_W; // дольки нижнего пояса обходят шов по кругу
+  const col = Math.min(SECTOR_COLS - 1, Math.floor((shifted / TEXTURE_W) * SECTOR_COLS));
+  return row * SECTOR_COLS + col;
+}
+
 /**
  * Заранее делит ВСЮ поверхность текстуры на ровно clicksNeeded ярких
  * участков — настоящая диаграмма Вороного, без единого не закрашенного
@@ -137,12 +166,19 @@ function buildFoilRegions(count, mode) {
   const palette = [...FOIL_COLORS].sort(() => Math.random() - 0.5);
   // В режимах цифр и букв у каждого участка свой уникальный знак (иначе null).
   const glyphs = pickGlyphs(mode, count);
+  const sectored = Boolean(glyphs);
   const seeds = [];
   for (let i = 0; i < count; i++) {
     const baseTheta = (i / count) * Math.PI * 2;
     const theta = baseTheta + rand(-0.35, 0.35);
-    const cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
-    const cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
+    let cx = (((theta / (Math.PI * 2)) * TEXTURE_W) % TEXTURE_W + TEXTURE_W) % TEXTURE_W;
+    let cy = rand(TEXTURE_H * 0.12, TEXTURE_H * 0.88);
+    if (sectored) {
+      // Ровная сетка из ячеек — центр каждой ячейки (см. sectorOf).
+      const row = Math.floor(i / SECTOR_COLS);
+      cx = ((((i % SECTOR_COLS) + 0.5) / SECTOR_COLS) * TEXTURE_W + rowShift(row)) % TEXTURE_W;
+      cy = (row === 0 ? ROW_SPLIT / 2 : (ROW_SPLIT + 1) / 2) * TEXTURE_H;
+    }
     const color = palette[i % palette.length];
     // Как участок называют диктор и подсказка: цвет — по имени цвета, иначе — по знаку.
     const name = glyphs
@@ -155,6 +191,10 @@ function buildFoilRegions(count, mode) {
   for (let y = 0; y < TEXTURE_H; y++) {
     const row = y * TEXTURE_W;
     for (let x = 0; x < TEXTURE_W; x++) {
+      if (sectored) {
+        regionMap[row + x] = sectorOf(x, y);
+        continue;
+      }
       const [wx, wy] = warp(x, y);
       let best = 0;
       let bestDist = Infinity;
@@ -173,7 +213,7 @@ function buildFoilRegions(count, mode) {
     }
   }
 
-  removeIslands(regionMap, seeds.length);
+  if (!sectored) removeIslands(regionMap, seeds.length);
 
   // Средний угол и высота каждого участка (по накопленным координатам его
   // пикселей, угол усредняется через синус/косинус, чтобы шов 0/2π не портил
@@ -251,6 +291,25 @@ function paintFoilPattern(ctx, regionMap, patches) {
     image.data[o + 1] = g;
     image.data[o + 2] = b;
     image.data[o + 3] = 255;
+  }
+  if (patches.some((p) => p.glyph)) {
+    // Чёткие тёмные швы между секторами — сразу видно, где кончается один и начинается другой.
+    const SEAM = 3; // полуширина шва, пикселей
+    for (let y = 0; y < TEXTURE_H; y++) {
+      for (let x = 0; x < TEXTURE_W; x++) {
+        const label = regionMap[y * TEXTURE_W + x];
+        const isSeam =
+          regionMap[y * TEXTURE_W + ((x + SEAM) % TEXTURE_W)] !== label ||
+          regionMap[y * TEXTURE_W + ((x - SEAM + TEXTURE_W) % TEXTURE_W)] !== label ||
+          (y + SEAM < TEXTURE_H && regionMap[(y + SEAM) * TEXTURE_W + x] !== label) ||
+          (y - SEAM >= 0 && regionMap[(y - SEAM) * TEXTURE_W + x] !== label);
+        if (!isSeam) continue;
+        const o = (y * TEXTURE_W + x) * 4;
+        image.data[o] *= 0.25;
+        image.data[o + 1] *= 0.25;
+        image.data[o + 2] *= 0.25;
+      }
+    }
   }
   paintGlyphs(image, regionMap, patches, TEXTURE_W, TEXTURE_H);
   ctx.putImageData(image, 0, 0);
@@ -378,19 +437,30 @@ export function createFoil(clicksNeeded, debris, topology, mode = 'colors') {
   // должен без сомнений отличить зелёный от голубого. Поэтому цвет участка
   // в основном светится сам (emissive), диффузная часть приглушена, а
   // тональная компрессия отключена — оттенок остаётся таким, как задан.
-  const material = new THREE.MeshStandardMaterial({
-    map: texture,
-    color: new THREE.Color(0x777777),
-    emissiveMap: texture,
-    emissive: new THREE.Color(0xffffff),
-    emissiveIntensity: 0.8,
-    transparent: true,
-    metalness: 0.1,
-    roughness: 0.5,
-    envMapIntensity: 0.3,
-    toneMapped: false,
-    side: THREE.DoubleSide,
-  });
+  // С цифрами и буквами иначе: любой блик (даже мягкий) заливает белый знак
+  // белым пятном, и он пропадает. Там фольга без бликов вообще — цвета
+  // выводятся ровно как нарисованы (MeshBasicMaterial не реагирует на свет).
+  const glyphMode = patches.some((p) => p.glyph);
+  const material = glyphMode
+    ? new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      })
+    : new THREE.MeshStandardMaterial({
+        map: texture,
+        color: new THREE.Color(0x777777),
+        emissiveMap: texture,
+        emissive: new THREE.Color(0xffffff),
+        emissiveIntensity: 0.8,
+        transparent: true,
+        metalness: 0.1,
+        roughness: 0.5,
+        envMapIntensity: 0.3,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      });
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
